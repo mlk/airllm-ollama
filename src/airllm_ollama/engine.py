@@ -13,11 +13,26 @@ from __future__ import annotations
 
 import importlib.util
 import threading
+import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Protocol, cast
 
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    """Result of a single generation, including Ollama style statistics."""
+
+    text: str
+    prompt_tokens: int = 0
+    generated_tokens: int = 0
+    load_duration_ns: int = 0
+    prompt_duration_ns: int = 0
+    eval_duration_ns: int = 0
+    total_duration_ns: int = 0
 
 
 def is_airllm_installed() -> bool:
@@ -194,8 +209,11 @@ class AirLLMEngine:
         self._settings = settings or get_settings()
         self._model_factory = model_factory or default_model_factory
         self._model: AirLLMModelLike | None = None
+        self._load_duration_ns = 0
         self._load_lock = threading.Lock()
         self._generation_lock = threading.Lock()
+        self._unload_lock = threading.Lock()
+        self._unload_timer: threading.Timer | None = None
 
     @property
     def settings(self) -> Settings:
@@ -235,7 +253,9 @@ class AirLLMEngine:
         """
         with self._load_lock:
             if self._model is None:
+                started = time.perf_counter_ns()
                 self._model = self._model_factory(self._settings)
+                self._load_duration_ns = time.perf_counter_ns() - started
             return self._model
 
     def unload(self) -> None:
@@ -246,6 +266,37 @@ class AirLLMEngine:
         """
         with self._generation_lock, self._load_lock:
             self._model = None
+
+    def schedule_unload(self, delay_seconds: float) -> None:
+        """Unload the model once it has been idle for ``delay_seconds``.
+
+        A pending unload is cancelled first, so the timer always measures the
+        idle time since the last request.
+
+        Args:
+            delay_seconds: Number of seconds to wait. A value of ``0`` unloads
+                the model immediately.
+        """
+        with self._unload_lock:
+            self._cancel_unload_timer()
+            if delay_seconds <= 0:
+                self.unload()
+                return
+            timer = threading.Timer(delay_seconds, self.unload)
+            timer.daemon = True
+            self._unload_timer = timer
+            timer.start()
+
+    def cancel_scheduled_unload(self) -> None:
+        """Cancel a pending unload, e.g. because a new request arrived."""
+        with self._unload_lock:
+            self._cancel_unload_timer()
+
+    def _cancel_unload_timer(self) -> None:
+        """Cancel the pending unload timer (the lock is held by the caller)."""
+        if self._unload_timer is not None:
+            self._unload_timer.cancel()
+            self._unload_timer = None
 
     def ensure_model_allowed(self, model: str | None) -> None:
         """Validate that ``model`` is the model served by this engine.
@@ -280,22 +331,66 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
+        return self.generate_result(prompt, **kwargs).text
+
+    def generate_result(self, prompt: str, **kwargs: object) -> GenerationResult:
+        """Generate text for ``prompt`` and report the generation statistics.
+
+        Args:
+            prompt: The prompt to complete.
+            **kwargs: Generation options forwarded to AirLLM. The reserved
+                ``model`` keyword is used to validate the requested model.
+
+        Returns:
+            The generated text together with token counts and timings.
+
+        Raises:
+            ModelMismatchError: If a mismatching model was requested.
+            ModelInitializationError: If the model could not be loaded.
+        """
         requested_model = cast("str | None", kwargs.pop("model", None))
         self.ensure_model_allowed(requested_model)
+        self.cancel_scheduled_unload()
         with self._generation_lock:
+            started = time.perf_counter_ns()
             model = self.load()
-            return self._generate(model, prompt, **kwargs)
+            load_duration = self._load_duration_ns
+            prompt_started = time.perf_counter_ns()
+            raw_output, prompt_tokens = self._run(model, prompt, **kwargs)
+            prompt_duration = time.perf_counter_ns() - prompt_started
+            text = self._decode(model, raw_output)
+            generated_tokens = self._count_generated_tokens(model, raw_output, prompt_tokens)
+            eval_duration = time.perf_counter_ns() - prompt_started
+            return GenerationResult(
+                text=text,
+                prompt_tokens=prompt_tokens,
+                generated_tokens=generated_tokens,
+                load_duration_ns=load_duration,
+                prompt_duration_ns=prompt_duration,
+                eval_duration_ns=eval_duration,
+                total_duration_ns=time.perf_counter_ns() - started,
+            )
 
     @staticmethod
-    def _generate(model: AirLLMModelLike, prompt: str, **kwargs: object) -> str:
-        """Tokenize, generate and decode a single completion."""
+    def _run(model: AirLLMModelLike, prompt: str, **kwargs: object) -> tuple[object, int]:
+        """Tokenize, generate and return the raw output plus the prompt length."""
         encoded = model.tokenizer(prompt, return_tensors="pt")
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
         # AirLLM backends accept the token ids positionally; the transformers
         # based one forwards them to `transformers.GenerationMixin.generate`.
         raw_output = model.generate(input_ids, attention_mask=attention_mask, **kwargs)
-        return AirLLMEngine._decode(model, raw_output)
+        return raw_output, _sequence_length(input_ids)
+
+    @staticmethod
+    def _count_generated_tokens(
+        model: AirLLMModelLike, raw_output: object, prompt_tokens: int
+    ) -> int:
+        """Return the number of tokens the model generated."""
+        if isinstance(raw_output, str):
+            # Backends that decode themselves only return the new tokens.
+            return _sequence_length(model.tokenizer(raw_output)["input_ids"])
+        return max(_sequence_length(raw_output) - prompt_tokens, 0)
 
     @staticmethod
     def _decode(model: AirLLMModelLike, raw_output: object) -> str:
@@ -306,6 +401,18 @@ class AirLLMEngine:
         if not decoded:
             return ""
         return decoded[0]
+
+
+def _sequence_length(token_ids: object) -> int:
+    """Return the number of tokens in a tensor or a (possibly nested) sequence."""
+    shape = getattr(token_ids, "shape", None)
+    if shape is not None:
+        return int(shape[-1])
+    if isinstance(token_ids, (list, tuple)):
+        if token_ids and isinstance(token_ids[0], (list, tuple)):
+            return len(token_ids[0])
+        return len(token_ids)
+    return 0
 
 
 _engine: AirLLMEngine | None = None
