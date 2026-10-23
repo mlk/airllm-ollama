@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from airllm_ollama.config import Settings, get_settings
+from airllm_ollama.config import DEFAULT_MODEL_NAME, Settings, get_settings
 
 
 def test_default_settings_are_applied() -> None:
@@ -14,8 +14,17 @@ def test_default_settings_are_applied() -> None:
     assert settings.host == "127.0.0.1"
     assert settings.port == 11434
     assert settings.log_level == "INFO"
-    assert settings.model_name == "airllm-model"
+    assert settings.model_name == DEFAULT_MODEL_NAME
     assert settings.model_path == ""
+    assert settings.device == "cuda:0"
+    assert settings.max_seq_len == 512
+
+
+def test_resolved_model_path_falls_back_to_model_name() -> None:
+    assert Settings(model_name="my-model").resolved_model_path == "my-model"
+    assert Settings(model_name="my-model", model_path="/models/x").resolved_model_path == (
+        "/models/x"
+    )
 
 
 def test_settings_are_loaded_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,4 +53,4 @@ def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     second = get_settings()
 
     assert first is second
-    assert second.model_name == "airllm-model"
+    assert second.model_name == DEFAULT_MODEL_NAME

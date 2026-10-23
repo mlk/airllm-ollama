@@ -91,21 +91,54 @@ src/airllm_ollama/
 ├── __main__.py        # `python -m airllm_ollama` entry point (uvicorn runner)
 ├── api/routes.py      # HTTP routes (api_router)
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
+├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
+├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
 ├── main.py            # create_app() factory + module-level `app`
 ├── schemas/           # pydantic request/response models
 └── version.py         # __version__ (must match pyproject.toml version)
 ```
 
-Planned extensions (keep the seams open):
+### Engine (issue #2, done)
 
-* `engine.py` (or `engine/`) — `AirLLMEngine` singleton wrapper around AirLLM:
-  lazy load of a single model, thread-safe `generate(prompt, **kwargs)`, clear
-  exception on a model-name mismatch, AirLLM imported lazily.
-* `schemas/` — Ollama-compatible payloads: `GenerateRequest`/`GenerateResponse`
-  (`model`, `prompt`, `response`, `done`, `eval_count`, …), `ChatRequest`/`ChatResponse`
-  (`messages`, `message`, …), `TagsResponse` (`models` with `name`, `size`, `digest`).
-* Endpoints belong in `api/routes.py` (or a new `api/ollama.py` router) and must
-  return Ollama's exact JSON shapes so standard Ollama clients work unchanged.
+* `AirLLMEngine` owns exactly one AirLLM model, loads it lazily on first use and
+  serialises every model interaction with an `RLock` (AirLLM streams layer
+  shards through shared hooks — concurrent generations corrupt that state).
+* `get_engine()` / `reset_engine()` provide the process-wide singleton.
+* `generate(prompt, **kwargs)` returns text; the reserved `model` keyword is
+  validated against the configured model and raises `ModelMismatchError`
+  (Ollama's `:latest` tag is normalised away before comparing).
+* `airllm` is imported lazily inside `default_model_factory`; the factory is
+  injectable so tests never import the runtime.
+* Model references follow Ollama's `name:tag` convention. `model_names_match()`
+  accepts any tag when the served model has none, but demands an exact tag
+  when the served model declares one (`llama3.2:1b` ≠ `llama3.2:70b`).
+* The engine uses two locks: `_generation_lock` covers the *whole* inference
+  call (AirLLM's streaming hooks mutate shared model state), `_load_lock` only
+  guards model creation so `load()` never blocks behind a running inference.
+
+## API layer notes (for issues #3–#5)
+
+* Map `ModelMismatchError` to **HTTP 404** (Ollama's behaviour for an unknown
+  model), not 500. `ModelInitializationError` maps to 503.
+* `get_engine()` caches the engine for the process lifetime; settings are read
+  once at startup. Call `reset_engine()` when the settings change (tests,
+  hot reloads) — the singleton is *not* invalidated automatically.
+
+## Data usage policy (important)
+
+The maintainer is on a **metered connection** — never download large artifacts.
+
+* The default model is the 4.1 MB `hf-internal-testing/tiny-random-LlamaForCausalLM`
+  (`DEFAULT_MODEL_NAME` in `src/airllm_ollama/config.py`).
+* Do **not** run `uv sync --extra airllm` or fetch model weights unless the
+  maintainer explicitly asks: torch alone is ~130 MB, and the AirLLM bootstrap
+  downloads every non-weight file of a repo (1.9 GB of ONNX exports for
+  `SmolLM2-135M-Instruct`).
+* Tests must keep mocking the engine — the suite may never touch the network.
+* When a real model is needed, pre-fetch a filtered snapshot
+  (`snapshot_download(..., allow_patterns=[...])`) and point
+  `AIRLLM_OLLAMA_MODEL_PATH` at the local directory. See the README section
+  "Downloading only what you need".
 
 ## Testing conventions
 
