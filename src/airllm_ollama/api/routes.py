@@ -12,9 +12,14 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import AirLLMEngine, GenerationResult, get_engine
+from airllm_ollama.engine import AirLLMEngine, get_engine
 from airllm_ollama.model_metadata import collect_metadata
-from airllm_ollama.options import apply_stop_sequences, map_options, parse_keep_alive
+from airllm_ollama.options import (
+    apply_stop_sequences,
+    map_options,
+    parse_keep_alive,
+)
+from airllm_ollama.options import done_reason as generation_done_reason
 from airllm_ollama.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from airllm_ollama.schemas.generate import GenerateRequest, GenerateResponse
 from airllm_ollama.schemas.health import HealthResponse
@@ -91,7 +96,7 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         response=text,
         done=True,
-        done_reason=_done_reason(result, options),
+        done_reason=generation_done_reason(result, options),
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,
@@ -99,18 +104,6 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
         eval_count=result.generated_tokens,
         eval_duration=result.eval_duration_ns,
     )
-
-
-def _done_reason(result: GenerationResult, options: dict[str, object]) -> str:
-    """Return Ollama's reason for the end of the generation.
-
-    The generation stops either because the model finished its answer or
-    because it reached the requested number of tokens.
-    """
-    max_new_tokens = options.get("max_new_tokens")
-    if isinstance(max_new_tokens, int) and result.generated_tokens >= max_new_tokens:
-        return "length"
-    return "stop"
 
 
 def _build_prompt(prompt: str, system: str | None) -> str:
@@ -172,7 +165,7 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         message=ChatMessage(role="assistant", content=text),
         done=True,
-        done_reason=_done_reason(result, options),
+        done_reason=generation_done_reason(result, options),
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,

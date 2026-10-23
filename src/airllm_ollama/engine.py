@@ -518,7 +518,9 @@ class AirLLMEngine:
         **kwargs: object,
     ) -> Iterator[StreamChunk]:
         """Run a generation and yield its chunks."""
+        prompt_started = time.perf_counter_ns()
         encoded = model.tokenizer(prompt, return_tensors="pt")
+        prompt_duration = time.perf_counter_ns() - prompt_started
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
         prompt_tokens = _sequence_length(input_ids)
@@ -543,7 +545,7 @@ class AirLLMEngine:
         worker = threading.Thread(target=run, name="airllm-generation", daemon=True)
         worker.start()
         streamed = False
-        prompt_started = time.perf_counter_ns()
+        generation_started = time.perf_counter_ns()
         try:
             for text in streamer:
                 # The streamer never yields empty chunks.
@@ -559,7 +561,7 @@ class AirLLMEngine:
         if not streamed and text:
             # The backend does not support streaming: deliver the whole answer.
             yield StreamChunk(text=text)
-        eval_duration = time.perf_counter_ns() - prompt_started
+        eval_duration = time.perf_counter_ns() - generation_started
         yield StreamChunk(
             text="",
             result=GenerationResult(
@@ -567,7 +569,7 @@ class AirLLMEngine:
                 prompt_tokens=prompt_tokens,
                 generated_tokens=self._count_generated_tokens(model, raw_output, prompt_tokens),
                 load_duration_ns=self._load_duration_ns,
-                prompt_duration_ns=0,
+                prompt_duration_ns=prompt_duration,
                 eval_duration_ns=eval_duration,
                 total_duration_ns=time.perf_counter_ns() - started,
             ),

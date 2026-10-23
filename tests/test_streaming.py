@@ -176,6 +176,12 @@ def test_the_stop_filter_ignores_empty_stop_sequences() -> None:
     assert stop_filter.stopped is False
 
 
+def test_the_events_can_use_an_explicit_format() -> None:
+    event = format_event({"done": False}, "sse")
+
+    assert event == 'data: {"done": false}\n\n'
+
+
 def test_the_events_use_newline_delimited_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AIRLLM_OLLAMA_STREAM_FORMAT", "ndjson")
     get_settings.cache_clear()

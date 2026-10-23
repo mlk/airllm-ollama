@@ -8,8 +8,13 @@ transformers counterpart and ignores the ones that have none.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from airllm_ollama.schemas.generate import GenerateOptions
+
+if TYPE_CHECKING:
+    from airllm_ollama.engine import GenerationResult
 
 DURATION_PATTERN = re.compile(r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[smh]?)\s*$")
 UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
@@ -49,6 +54,25 @@ def map_options(options: GenerateOptions | None) -> dict[str, object]:
         # enabled; Ollama always samples.
         mapped["do_sample"] = True
     return mapped
+
+
+def done_reason(result: GenerationResult, options: Mapping[str, object]) -> str:
+    """Return Ollama's reason for the end of a generation.
+
+    The generation stops either because the model finished its answer or
+    because it reached the requested number of tokens.
+
+    Args:
+        result: The result of the generation.
+        options: The translated generation options.
+
+    Returns:
+        ``"stop"`` or ``"length"``.
+    """
+    max_new_tokens = options.get("max_new_tokens")
+    if isinstance(max_new_tokens, int) and result.generated_tokens >= max_new_tokens:
+        return "length"
+    return "stop"
 
 
 def apply_stop_sequences(text: str, stop: list[str] | None) -> str:

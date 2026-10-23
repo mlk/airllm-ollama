@@ -16,28 +16,34 @@ from typing import Any
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import AirLLMEngine, StreamChunk
-from airllm_ollama.options import StopSequenceFilter
+from airllm_ollama.options import StopSequenceFilter, done_reason
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
 SSE_MEDIA_TYPE = "text/event-stream"
 
 
+def configured_format() -> str:
+    """Return the configured framing of the streaming responses."""
+    return get_settings().stream_format
+
+
 def media_type() -> str:
     """Return the media type of the streaming responses."""
-    return SSE_MEDIA_TYPE if get_settings().stream_format == "sse" else NDJSON_MEDIA_TYPE
+    return SSE_MEDIA_TYPE if configured_format() == "sse" else NDJSON_MEDIA_TYPE
 
 
-def format_event(payload: dict[str, Any]) -> str:
+def format_event(payload: dict[str, Any], stream_format: str | None = None) -> str:
     """Render a single streaming event.
 
     Args:
         payload: The JSON serialisable payload of the event.
+        stream_format: The framing to use; defaults to the configured one.
 
     Returns:
-        The event, framed for the configured stream format.
+        The event, framed for the stream format.
     """
     data = json.dumps(payload)
-    if get_settings().stream_format == "sse":
+    if (stream_format or configured_format()) == "sse":
         return f"data: {data}\n\n"
     return f"{data}\n"
 
@@ -63,19 +69,20 @@ def generate_events(
         The rendered events.
     """
     created_at = _now()
+    stream_format = configured_format()
     stop_filter = StopSequenceFilter(stop)
     for chunk in engine.generate_stream(prompt, model=model, **options):
         if chunk.result is not None:
-            yield format_event(_final_payload(model, created_at, chunk))
+            yield format_event(_final_payload(model, created_at, chunk, options), stream_format)
             return
         text = stop_filter.feed(chunk.text)
         if text:
-            yield format_event(_partial_payload(model, created_at, text))
+            yield format_event(_partial_payload(model, created_at, text), stream_format)
         if stop_filter.stopped:
             return
     remaining = stop_filter.flush()
     if remaining:
-        yield format_event(_partial_payload(model, created_at, remaining))
+        yield format_event(_partial_payload(model, created_at, remaining), stream_format)
 
 
 def chat_events(
@@ -99,19 +106,22 @@ def chat_events(
         The rendered events.
     """
     created_at = _now()
+    stream_format = configured_format()
     stop_filter = StopSequenceFilter(stop)
     for chunk in engine.generate_chat_stream(messages, model=model, **options):
         if chunk.result is not None:
-            yield format_event(_final_chat_payload(model, created_at, chunk))
+            yield format_event(
+                _final_chat_payload(model, created_at, chunk, options), stream_format
+            )
             return
         text = stop_filter.feed(chunk.text)
         if text:
-            yield format_event(_partial_chat_payload(model, created_at, text))
+            yield format_event(_partial_chat_payload(model, created_at, text), stream_format)
         if stop_filter.stopped:
             return
     remaining = stop_filter.flush()
     if remaining:
-        yield format_event(_partial_chat_payload(model, created_at, remaining))
+        yield format_event(_partial_chat_payload(model, created_at, remaining), stream_format)
 
 
 def _partial_payload(model: str, created_at: str, text: str) -> dict[str, Any]:
@@ -119,7 +129,9 @@ def _partial_payload(model: str, created_at: str, text: str) -> dict[str, Any]:
     return {"model": model, "created_at": created_at, "response": text, "done": False}
 
 
-def _final_payload(model: str, created_at: str, chunk: StreamChunk) -> dict[str, Any]:
+def _final_payload(
+    model: str, created_at: str, chunk: StreamChunk, options: dict[str, object]
+) -> dict[str, Any]:
     """Return the payload of the last completion event."""
     result = chunk.result
     return {
@@ -127,7 +139,7 @@ def _final_payload(model: str, created_at: str, chunk: StreamChunk) -> dict[str,
         "created_at": created_at,
         "response": "",
         "done": True,
-        "done_reason": "stop",
+        "done_reason": done_reason(result, options) if result else "stop",
         "total_duration": result.total_duration_ns if result else 0,
         "load_duration": result.load_duration_ns if result else 0,
         "prompt_eval_count": result.prompt_tokens if result else 0,
@@ -147,7 +159,9 @@ def _partial_chat_payload(model: str, created_at: str, text: str) -> dict[str, A
     }
 
 
-def _final_chat_payload(model: str, created_at: str, chunk: StreamChunk) -> dict[str, Any]:
+def _final_chat_payload(
+    model: str, created_at: str, chunk: StreamChunk, options: dict[str, object]
+) -> dict[str, Any]:
     """Return the payload of the last chat event."""
     result = chunk.result
     return {
@@ -155,7 +169,7 @@ def _final_chat_payload(model: str, created_at: str, chunk: StreamChunk) -> dict
         "created_at": created_at,
         "message": {"role": "assistant", "content": ""},
         "done": True,
-        "done_reason": "stop",
+        "done_reason": done_reason(result, options) if result else "stop",
         "total_duration": result.total_duration_ns if result else 0,
         "load_duration": result.load_duration_ns if result else 0,
         "prompt_eval_count": result.prompt_tokens if result else 0,

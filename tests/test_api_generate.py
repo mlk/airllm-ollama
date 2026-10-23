@@ -215,6 +215,56 @@ def test_a_stream_schedules_the_unload(client: TestClient, engine: Any) -> None:
     engine.return_value.schedule_unload.assert_called_once_with(90.0)
 
 
+def test_a_stream_reports_length_when_the_token_limit_is_reached(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="truncated", prompt_tokens=4, generated_tokens=64),
+            )
+        ]
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": "hello",
+            "stream": True,
+            "options": {"num_predict": 64},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1]["done_reason"] == "length"
+
+
+def test_a_stream_reports_stop_when_the_model_finished(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="done", prompt_tokens=4, generated_tokens=3),
+            )
+        ]
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": "hello",
+            "stream": True,
+            "options": {"num_predict": 64},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1]["done_reason"] == "stop"
+
+
 def test_a_stream_rejects_an_unknown_model(client: TestClient, engine: Any) -> None:
     engine.return_value.prepare.side_effect = ModelMismatchError("model 'x' not found")
 
