@@ -26,6 +26,12 @@ htmlcov/
 .ruff_cache/
 .dmypy.json
 
+# Downloaded models (see the README: "Downloading only what you need")
+models/
+*.gguf
+*.safetensors
+pytorch_model*.bin
+
 # Environment / secrets
 .env
 .env.*
