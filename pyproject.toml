@@ -105,7 +105,6 @@ addopts = [
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-report=xml",
-    "--cov-fail-under=80",
 ]
 filterwarnings = ["error"]
 

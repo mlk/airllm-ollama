@@ -60,7 +60,10 @@ together.
   docstring; every function needs full type annotations.
 * **mypy** — `strict = true`, `python_version = "3.11"`. No `Any` leaks, no missing
   annotations, no untyped decorators.
-* **pytest** — `--cov=airllm_ollama --cov-branch --cov-fail-under=80`. The 80 %
+* **pytest** — coverage is configured once in `pyproject.toml`: `--cov=airllm_ollama
+  --cov-branch` plus `fail_under = 80` under `[tool.coverage.report]`. Run plain
+  `uv run pytest` everywhere (CI included) — never re-declare coverage flags on
+  the command line, they would override the single source of truth. The 80 %
   coverage gate is enforced locally *and* in CI; keep new code covered by tests.
 * `filterwarnings = ["error"]` — any warning (including deprecations from
   dependencies) fails the suite. Fix the cause instead of suppressing it.
