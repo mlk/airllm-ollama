@@ -18,10 +18,13 @@ from pytest_mock import MockerFixture
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
+    _as_nested_list,
+    _import_error,
     _sequence_length,
     default_model_factory,
     get_engine,
     is_airllm_installed,
+    is_mlx_backend,
     model_names_match,
     normalize_model_name,
     reset_engine,
@@ -429,6 +432,65 @@ def test_generate_chat_rejects_a_mismatching_model() -> None:
     assert factory.calls == []
 
 
+class MlxModel(FakeModel):
+    """Model double that mimics the MLX backend of AirLLM (macOS)."""
+
+    def __init__(self) -> None:
+        """Create a model that looks like the MLX backend."""
+        super().__init__()
+        self.model_args = object()
+
+
+def test_the_mlx_backend_is_detected() -> None:
+    assert is_mlx_backend(MlxModel()) is True
+    assert is_mlx_backend(FakeModel()) is False
+
+
+def test_token_ids_are_converted_to_nested_lists() -> None:
+    assert _as_nested_list([1, 2, 3]) == [[1, 2, 3]]
+    assert _as_nested_list([[1, 2], [3, 4]]) == [[1, 2], [3, 4]]
+    assert _as_nested_list(None) == []
+
+    class FakeTensor:
+        """Stand-in for a torch tensor."""
+
+        def tolist(self) -> list[list[int]]:
+            """Return the values as a nested list."""
+            return [[1, 2, 3]]
+
+    assert _as_nested_list(FakeTensor()) == [[1, 2, 3]]
+
+
+def test_mlx_models_receive_an_mlx_array() -> None:
+    pytest.importorskip("mlx.core")
+    model = MlxModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("Hello")
+
+    input_ids = model.calls[0][0][0]
+    assert type(input_ids).__name__ == "array"
+    assert list(getattr(input_ids, "shape", ())) == [1, len(TOKEN_IDS)]
+
+
+def test_the_mlx_backend_gets_a_max_new_tokens() -> None:
+    model = MlxModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("Hello")
+
+    assert model.calls[0][1]["max_new_tokens"] == 512
+
+
+def test_the_transformers_backend_keeps_its_options() -> None:
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("Hello")
+
+    assert "max_new_tokens" not in model.calls[0][1]
+
+
 def test_generation_result_reports_the_statistics() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)
@@ -483,6 +545,17 @@ def test_model_initialisation_failure_is_wrapped() -> None:
 
     with pytest.raises(ModelInitializationError, match="boom"):
         engine.generate("Hello")
+
+
+def test_a_missing_dependency_is_reported() -> None:
+    """A broken import is not the same as a missing package."""
+    error = ImportError("No module named 'mlx'")
+    error.name = "mlx"
+
+    message = _import_error(error)
+
+    assert "mlx" in message
+    assert "installed" in message
 
 
 def test_default_factory_reports_missing_airllm_package(

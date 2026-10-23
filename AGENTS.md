@@ -139,6 +139,12 @@ src/airllm_ollama/
   (Ollama's `:latest` tag is normalised away before comparing).
 * `airllm` is imported lazily inside `default_model_factory`; the factory is
   injectable so tests never import the runtime.
+* On macOS AirLLM uses Apple's **MLX backend**, which needs `mlx` — a package
+  AirLLM imports but does not depend on. The `airllm` extra installs it
+  (`mlx>=0.21; sys_platform == 'darwin'`).
+* The MLX backend works on MLX arrays instead of torch tensors and needs a
+  `max_new_tokens`; `engine.is_mlx_backend()` detects it and the engine
+  converts the token ids (`mx.array(...)`) and sets the limit.
 * Model references follow Ollama's `name:tag` convention. `model_names_match()`
   accepts any tag when the served model has none, but demands an exact tag
   when the served model declares one (`llama3.2:1b` ≠ `llama3.2:70b`).
@@ -238,6 +244,8 @@ The maintainer is on a **metered connection** — never download large artifacts
 
 * The default model is the 4.1 MB `hf-internal-testing/tiny-random-LlamaForCausalLM`
   (`DEFAULT_MODEL_NAME` in `src/airllm_ollama/config.py`).
+* The service listens on port **8000** (uvicorn's default). Ollama's port
+  11434 is available via `AIRLLM_OLLAMA_PORT`, but a local Ollama occupies it.
 * Do **not** run `uv sync --extra airllm` or fetch model weights unless the
   maintainer explicitly asks: torch alone is ~130 MB, and the AirLLM bootstrap
   downloads every non-weight file of a repo (1.9 GB of ONNX exports for

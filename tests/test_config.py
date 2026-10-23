@@ -12,7 +12,7 @@ def test_default_settings_are_applied() -> None:
 
     assert settings.app_name == "airllm-ollama-proxy"
     assert settings.host == "127.0.0.1"
-    assert settings.port == 11434
+    assert settings.port == 8000
     assert settings.log_level == "INFO"
     assert settings.model_name == DEFAULT_MODEL_NAME
     assert settings.model_path == ""

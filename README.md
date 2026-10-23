@@ -20,27 +20,15 @@ In microservice architectures or multi-agent AI pipelines, downstream applicatio
 
 ## Architectural Context
 
-```
-                   ┌──────────────────────────────────────┐
-                   │          Client Application           │
-                   └──────────────────┬───────────────────┘
-                                      │
-                   ┌──────────────────┴───────────────────┐
-                   │        Inference Router/Proxy       │
-                   └──────────┬───────────────────┬───────┘
-                              │                   │
-         [High Speed / Draft] │                   │ [High Accuracy / Complex]
-                              ▼                   ▼
-                      ┌──────────────┐     ┌──────────────┐
-                      │ Standard     │     │ AirLLM       │
-                      │ Ollama API   │     │ Wrapper      │
-                      └──────────────┘     └──────┬───────┘
-                                                  │
-                                                  ▼
-                                           ┌──────────────┐
-                                           │ AirLLM       │
-                                           │ Model Engine │
-                                           └──────────────┘
+```mermaid
+flowchart TD
+    client["Client Application"]
+    router{"Inference Router / Proxy"}
+
+    client --> router
+    router -->|"High Speed / Draft"| ollama["Standard Ollama API"]
+    router -->|"High Accuracy / Complex"| wrapper["AirLLM Wrapper"]
+    wrapper --> engine["AirLLM Model Engine"]
 ```
 
 When speed is prioritized, requests are routed to standard Ollama nodes. When deep accuracy or large-context reasoning is required, requests are routed seamlessly to this AirLLM wrapper.
@@ -60,8 +48,10 @@ When speed is prioritized, requests are routed to standard Ollama nodes. When de
 # Install the pinned dependencies from uv.lock
 uv sync --dev
 
-# Optional: install the AirLLM runtime (pulls in torch/transformers, ~130 MB
-# for torch alone on macOS arm64; the model weights are a separate download)
+# Install the AirLLM runtime (pulls in torch/transformers, ~130 MB for torch
+# alone on macOS arm64; the model weights are a separate download).
+# On macOS the extra also installs Apple's MLX framework, which AirLLM
+# imports but does not depend on.
 uv sync --dev --extra airllm
 ```
 
@@ -120,15 +110,21 @@ per layer next to the checkpoint; set
 ### Running the application locally
 
 ```bash
-# Start the API server on http://127.0.0.1:11434
-uv run uvicorn airllm_ollama.main:app --reload
+# Start the API server on http://127.0.0.1:8000
+# The extra is needed for inference; without it the API still answers, but
+# every generation fails with a 503.
+uv run --extra airllm uvicorn airllm_ollama.main:app --reload
 
 # ...or via the module entry point (uses AIRLLM_OLLAMA_HOST/PORT)
-uv run python -m airllm_ollama
+uv run --extra airllm python -m airllm_ollama
 
 # Verify the service is alive
-curl http://127.0.0.1:11434/health
+curl http://127.0.0.1:8000/health
 ```
+
+The server listens on port **8000** (uvicorn's default). Ollama's own port
+11434 is available with `AIRLLM_OLLAMA_PORT=11434` — but a local Ollama
+already occupies it.
 
 Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 (see `.env.example`):
@@ -136,7 +132,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AIRLLM_OLLAMA_HOST` | `127.0.0.1` | Server bind address |
-| `AIRLLM_OLLAMA_PORT` | `11434` | Server port (Ollama-compatible) |
+| `AIRLLM_OLLAMA_PORT` | `8000` | Server port |
 | `AIRLLM_OLLAMA_LOG_LEVEL` | `INFO` | Uvicorn log level |
 | `AIRLLM_OLLAMA_MODEL_NAME` | `hf-internal-testing/tiny-random-LlamaForCausalLM` | Name of the single served model |
 | `AIRLLM_OLLAMA_MODEL_PATH` | _(empty)_ | Local checkpoint path; empty means "fetch `<model name>` from Hugging Face" |
@@ -162,7 +158,7 @@ work against this service unchanged.
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
-curl http://127.0.0.1:11435/api/tags
+curl http://127.0.0.1:8000/api/tags
 ```
 
 ```json
@@ -197,7 +193,7 @@ not been fetched yet is listed with empty metadata.
 ### Generating
 
 ```bash
-curl http://127.0.0.1:11435/api/generate \
+curl http://127.0.0.1:8000/api/generate \
   -H 'Content-Type: application/json' \
   -d '{
         "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -229,7 +225,7 @@ the response line by line, so this is the default; Server-Sent Events can be
 selected with `AIRLLM_OLLAMA_STREAM_FORMAT=sse`.
 
 ```bash
-curl -N http://127.0.0.1:11435/api/generate \
+curl -N http://127.0.0.1:8000/api/generate \
   -H 'Content-Type: application/json' \
   -d '{"model": "...", "prompt": "Why is the sky blue?", "stream": true}'
 ```
@@ -261,7 +257,7 @@ model cannot be loaded and `400` for an invalid request body.
 ### Chatting
 
 ```bash
-curl http://127.0.0.1:11435/api/chat \
+curl http://127.0.0.1:8000/api/chat \
   -H 'Content-Type: application/json' \
   -d '{
         "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -307,7 +303,7 @@ Assistant:
 ```bash
 # Check the endpoints of a running service
 uv run python -m airllm_ollama --check
-uv run python -m airllm_ollama --check --url http://127.0.0.1:11435 --timeout 2
+uv run python -m airllm_ollama --check --url http://127.0.0.1:8000 --timeout 2
 ```
 
 ```
