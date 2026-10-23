@@ -144,6 +144,52 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_MAX_SEQ_LEN` | `512` | Maximum context length |
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
 
+### API
+
+The `/api/*` routes mirror Ollama's REST interface, so standard Ollama clients
+work against this service unchanged.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/` | Service name, version and the served model |
+| `GET` | `/health` | Liveness probe; `model_loaded` tells whether the weights are in memory |
+| `GET` | `/api/version` | Server version, as in Ollama |
+| `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |
+| `GET` | `/docs` | Interactive OpenAPI documentation |
+
+```bash
+curl http://127.0.0.1:11435/api/tags
+```
+
+```json
+{
+  "models": [
+    {
+      "name": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+      "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+      "modified_at": "2026-10-23T11:29:33.028910Z",
+      "size": 4194304,
+      "digest": "sha256:35bac10d539b472e8d971660006ffc27ba2736cdf74da9c0a3722603596df9ec",
+      "details": {
+        "parent_model": "",
+        "format": "safetensors",
+        "family": "llama",
+        "families": ["llama"],
+        "parameter_size": "135M",
+        "quantization_level": "",
+        "context_length": 512
+      },
+      "capabilities": ["completion"]
+    }
+  ]
+}
+```
+
+`/api/tags` derives its metadata from the **local** checkpoint only — size,
+`sha256` digest, architecture family and parameter count (read from the
+safetensors header). Nothing is ever downloaded to answer it; a model that has
+not been fetched yet is listed with empty metadata.
+
 ### Running the tests
 
 ```bash
@@ -176,11 +222,12 @@ uv run pytest                # tests + coverage gate
 src/airllm_ollama/
 ├── __init__.py        # package exports
 ├── __main__.py        # `python -m airllm_ollama` entry point
-├── api/routes.py      # HTTP routes
+├── api/routes.py      # HTTP routes (/, /health, /api/version, /api/tags)
 ├── config.py          # environment-driven settings
 ├── engine.py          # AirLLM singleton wrapper (lazy load, thread-safe)
 ├── exceptions.py      # error hierarchy
 ├── main.py            # FastAPI application factory
+├── model_metadata.py  # checkpoint metadata (size, digest, family, params)
 ├── schemas/           # pydantic request/response models
 └── version.py         # package version
 tests/                 # pytest suite

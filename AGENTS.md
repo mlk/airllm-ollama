@@ -94,9 +94,29 @@ src/airllm_ollama/
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
 ├── main.py            # create_app() factory + module-level `app`
+├── model_metadata.py  # checkpoint metadata read from the local checkpoint
 ├── schemas/           # pydantic request/response models
 └── version.py         # __version__ (must match pyproject.toml version)
 ```
+
+### Endpoints (issue #3, done)
+
+| Method | Path | Payload |
+| --- | --- | --- |
+| `GET` | `/` | `RootResponse` — name, version, served model |
+| `GET` | `/health` | `HealthResponse` — status, version, model, `model_loaded` |
+| `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
+| `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
+
+* The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
+  real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
+  `details` (`parent_model`, `format`, `family`, `families`, `parameter_size`,
+  `quantization_level`, `context_length`) and `capabilities`.
+* `model_metadata.collect_metadata()` derives the metadata from the **local**
+  checkpoint: file sizes, `sha256` digest of the weights, `model_type` from
+  `config.json` and the parameter count from the safetensors header. It is
+  cached and never downloads anything — a model that was not fetched yet is
+  listed with empty metadata.
 
 ### Engine (issue #2, done)
 

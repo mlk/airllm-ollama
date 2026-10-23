@@ -11,3 +11,4 @@ class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     version: str
     model: str
+    model_loaded: bool = False
