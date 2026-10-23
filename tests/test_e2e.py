@@ -8,6 +8,7 @@ code path a real model would take.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -215,6 +216,100 @@ def test_a_model_that_cannot_be_loaded_is_answered_with_503(
 
     assert response.status_code == 503
     assert response.json() == {"error": "cannot load the model"}
+
+
+def test_api_generate_streams_the_answer(service: TestClient, factory: FakeFactory) -> None:
+    factory.model.chunks = ["the ", "sky ", "is blue"]
+
+    response = service.post(
+        "/api/generate", json={"model": MODEL, "prompt": PROMPT, "stream": True}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events[:-1]) == "the sky is blue"
+    assert events[0]["done"] is False
+    assert events[-1]["done"] is True
+    assert events[-1]["eval_count"] == 0
+
+
+def test_api_chat_streams_the_answer(service: TestClient, factory: FakeFactory) -> None:
+    factory.model.chunks = ["blue ", "sky"]
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": PROMPT}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["message"]["content"] for event in events[:-1]) == "blue sky"
+    assert events[-1]["done"] is True
+
+
+def test_a_stream_is_cut_at_a_stop_sequence(service: TestClient, factory: FakeFactory) -> None:
+    factory.model.chunks = ["before ", "STOP", " after"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events) == "before "
+
+
+def test_a_stream_rejects_an_unknown_model(service: TestClient) -> None:
+    response = service.post(
+        "/api/generate", json={"model": "other-model", "prompt": PROMPT, "stream": True}
+    )
+
+    assert response.status_code == 404
+    assert "error" in response.json()
+
+
+def test_a_backend_without_streaming_delivers_the_whole_answer(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """Backends that cannot stream answer in one piece."""
+    factory.model.chunks = []
+
+    response = service.post(
+        "/api/generate", json={"model": MODEL, "prompt": PROMPT, "stream": True}
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events[:-1]) == f"decoded:{TOKEN_IDS}"
+
+
+def test_a_stream_can_use_server_sent_events(
+    service: TestClient, factory: FakeFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIRLLM_OLLAMA_STREAM_FORMAT", "sse")
+    get_settings.cache_clear()
+    factory.model.chunks = ["hello"]
+
+    response = service.post(
+        "/api/generate", json={"model": MODEL, "prompt": PROMPT, "stream": True}
+    )
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert events[0]["response"] == "hello"
 
 
 def test_the_full_journey_of_an_ollama_client(service: TestClient, factory: FakeFactory) -> None:

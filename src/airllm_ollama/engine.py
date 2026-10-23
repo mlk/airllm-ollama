@@ -14,13 +14,14 @@ from __future__ import annotations
 import importlib.util
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 from airllm_ollama.chat import ChatTurn, render_chat
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.streaming import TextStreamer
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,18 @@ class GenerationResult:
     prompt_duration_ns: int = 0
     eval_duration_ns: int = 0
     total_duration_ns: int = 0
+
+
+@dataclass(frozen=True)
+class StreamChunk:
+    """A piece of a streaming generation.
+
+    The last chunk of a stream carries the statistics of the finished
+    generation in :attr:`result`.
+    """
+
+    text: str
+    result: GenerationResult | None = None
 
 
 def is_airllm_installed() -> bool:
@@ -317,6 +330,23 @@ class AirLLMEngine:
                 f"'{self._settings.model_name}'."
             )
 
+    def prepare(self, model: str | None = None) -> None:
+        """Validate the model and load it, so that failures happen early.
+
+        A streaming response sends its headers before the first chunk is
+        produced; loading the model here turns a broken checkpoint into a
+        proper error response instead of a truncated stream.
+
+        Args:
+            model: The model the client asked for.
+
+        Raises:
+            ModelMismatchError: If a mismatching model was requested.
+            ModelInitializationError: If the model could not be loaded.
+        """
+        self.ensure_model_allowed(model)
+        self.load()
+
     def generate(self, prompt: str, *, model: str | None = None, **kwargs: object) -> str:
         """Generate text for ``prompt``.
 
@@ -415,6 +445,134 @@ class AirLLMEngine:
             prompt_duration_ns=prompt_duration,
             eval_duration_ns=eval_duration,
             total_duration_ns=time.perf_counter_ns() - started,
+        )
+
+    def generate_stream(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        **kwargs: object,
+    ) -> Iterator[StreamChunk]:
+        """Generate text, yielding the chunks as they are produced.
+
+        The generation runs in a worker thread, because the model only reports
+        the produced tokens from the thread it runs in. The last chunk carries
+        the statistics of the finished generation.
+
+        Args:
+            prompt: The prompt to complete.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+            **kwargs: Generation options forwarded to AirLLM.
+
+        Yields:
+            The chunks of the generated text.
+
+        Raises:
+            ModelMismatchError: If a mismatching model was requested.
+            ModelInitializationError: If the model could not be loaded.
+        """
+        self.ensure_model_allowed(model)
+        self.cancel_scheduled_unload()
+        with self._generation_lock:
+            started = time.perf_counter_ns()
+            loaded_model = self.load()
+            yield from self._stream(loaded_model, prompt, started, **kwargs)
+
+    def generate_chat_stream(
+        self,
+        messages: Sequence[ChatTurn],
+        *,
+        model: str | None = None,
+        **kwargs: object,
+    ) -> Iterator[StreamChunk]:
+        """Render a chat history and stream the assistant's answer.
+
+        Args:
+            messages: The chat history as ``(role, content)`` pairs.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+            **kwargs: Generation options forwarded to AirLLM.
+
+        Yields:
+            The chunks of the generated text.
+
+        Raises:
+            ModelMismatchError: If a mismatching model was requested.
+            ModelInitializationError: If the model could not be loaded.
+        """
+        self.ensure_model_allowed(model)
+        self.cancel_scheduled_unload()
+        with self._generation_lock:
+            started = time.perf_counter_ns()
+            loaded_model = self.load()
+            prompt = render_chat(loaded_model.tokenizer, messages)
+            yield from self._stream(loaded_model, prompt, started, **kwargs)
+
+    def _stream(
+        self,
+        model: AirLLMModelLike,
+        prompt: str,
+        started: int,
+        **kwargs: object,
+    ) -> Iterator[StreamChunk]:
+        """Run a generation and yield its chunks."""
+        prompt_started = time.perf_counter_ns()
+        encoded = model.tokenizer(prompt, return_tensors="pt")
+        prompt_duration = time.perf_counter_ns() - prompt_started
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask")
+        prompt_tokens = _sequence_length(input_ids)
+        streamer = TextStreamer(model.tokenizer)
+        outcome: list[object] = []
+
+        def run() -> None:
+            """Run the generation in the worker thread."""
+            try:
+                outcome.append(
+                    model.generate(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        streamer=streamer,
+                        **kwargs,
+                    )
+                )
+            finally:
+                # Backends that do not stream never end the streamer.
+                streamer.end()
+
+        worker = threading.Thread(target=run, name="airllm-generation", daemon=True)
+        worker.start()
+        streamed = False
+        generation_started = time.perf_counter_ns()
+        try:
+            for text in streamer:
+                # The streamer never yields empty chunks.
+                streamed = True
+                yield StreamChunk(text=text)
+        finally:
+            # The model may not be used while it is still generating, so the
+            # lock is only released after the worker finished.
+            worker.join()
+
+        raw_output = outcome[0] if outcome else None
+        text = self._decode(model, raw_output) if raw_output is not None else ""
+        if not streamed and text:
+            # The backend does not support streaming: deliver the whole answer.
+            yield StreamChunk(text=text)
+        eval_duration = time.perf_counter_ns() - generation_started
+        yield StreamChunk(
+            text="",
+            result=GenerationResult(
+                text=text,
+                prompt_tokens=prompt_tokens,
+                generated_tokens=self._count_generated_tokens(model, raw_output, prompt_tokens),
+                load_duration_ns=self._load_duration_ns,
+                prompt_duration_ns=prompt_duration,
+                eval_duration_ns=eval_duration,
+                total_duration_ns=time.perf_counter_ns() - started,
+            ),
         )
 
     @staticmethod

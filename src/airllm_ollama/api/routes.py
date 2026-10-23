@@ -4,15 +4,22 @@ The ``/api/*`` routes mirror Ollama's REST interface, so standard Ollama
 clients can talk to this service unchanged.
 """
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
+from airllm_ollama.api.stream import chat_events, generate_events, media_type
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import GenerationResult, get_engine
+from airllm_ollama.engine import AirLLMEngine, get_engine
 from airllm_ollama.model_metadata import collect_metadata
-from airllm_ollama.options import apply_stop_sequences, map_options, parse_keep_alive
+from airllm_ollama.options import (
+    apply_stop_sequences,
+    map_options,
+    parse_keep_alive,
+)
+from airllm_ollama.options import done_reason as generation_done_reason
 from airllm_ollama.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from airllm_ollama.schemas.generate import GenerateRequest, GenerateResponse
 from airllm_ollama.schemas.health import HealthResponse
@@ -51,15 +58,29 @@ async def version() -> VersionResponse:
 
 
 @api_router.post("/api/generate", response_model=GenerateResponse, tags=["ollama"])
-async def generate(request: GenerateRequest) -> GenerateResponse:
+async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResponse:
     """Generate a completion, as ``POST /api/generate`` does in Ollama.
 
-    Only the non-streaming mode is supported: the answer is returned as a
-    single JSON object with ``done`` set to ``true``.
+    With ``stream: true`` the answer is streamed as newline delimited JSON (or
+    Server-Sent Events), otherwise it is returned as a single JSON object with
+    ``done`` set to ``true``.
     """
     engine = get_engine()
     prompt = _build_prompt(request.prompt, request.system)
     options = map_options(request.options)
+    if request.stream:
+        engine.prepare(request.model)
+        return _stream_response(
+            generate_events(
+                engine,
+                prompt,
+                model=request.model,
+                options=options,
+                stop=request.options.stop if request.options else None,
+            ),
+            engine,
+            request.keep_alive,
+        )
     result = engine.generate_result(prompt, model=request.model, **options)
     text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
 
@@ -75,7 +96,7 @@ async def generate(request: GenerateRequest) -> GenerateResponse:
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         response=text,
         done=True,
-        done_reason=_done_reason(result, options),
+        done_reason=generation_done_reason(result, options),
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,
@@ -85,18 +106,6 @@ async def generate(request: GenerateRequest) -> GenerateResponse:
     )
 
 
-def _done_reason(result: GenerationResult, options: dict[str, object]) -> str:
-    """Return Ollama's reason for the end of the generation.
-
-    The generation stops either because the model finished its answer or
-    because it reached the requested number of tokens.
-    """
-    max_new_tokens = options.get("max_new_tokens")
-    if isinstance(max_new_tokens, int) and result.generated_tokens >= max_new_tokens:
-        return "length"
-    return "stop"
-
-
 def _build_prompt(prompt: str, system: str | None) -> str:
     """Prefix the prompt with the system message, the way Ollama does."""
     if not system:
@@ -104,18 +113,43 @@ def _build_prompt(prompt: str, system: str | None) -> str:
     return f"{system}\n\n{prompt}"
 
 
+def _stream_response(
+    events: Iterator[str], engine: AirLLMEngine, keep_alive: str | None
+) -> StreamingResponse:
+    """Return a streaming response and schedule the unload of the model."""
+    settings = get_settings()
+    lifetime = parse_keep_alive(keep_alive if keep_alive is not None else settings.keep_alive)
+    if lifetime is not None:
+        engine.schedule_unload(lifetime)
+    return StreamingResponse(events, media_type=media_type())
+
+
 @api_router.post("/api/chat", response_model=ChatResponse, tags=["ollama"])
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     """Answer a chat, as ``POST /api/chat`` does in Ollama.
 
     The messages are rendered with the chat template of the model; models
-    without a template get a plain transcript. Only the non-streaming mode is
-    supported: the answer is returned as a single JSON object with ``done``
-    set to ``true``.
+    without a template get a plain transcript. With ``stream: true`` the
+    answer is streamed as newline delimited JSON (or Server-Sent Events),
+    otherwise it is returned as a single JSON object with ``done`` set to
+    ``true``.
     """
     engine = get_engine()
     messages = [(message.role, message.content) for message in request.messages]
     options = map_options(request.options)
+    if request.stream:
+        engine.prepare(request.model)
+        return _stream_response(
+            chat_events(
+                engine,
+                messages,
+                model=request.model,
+                options=options,
+                stop=request.options.stop if request.options else None,
+            ),
+            engine,
+            request.keep_alive,
+        )
     result = engine.generate_chat(messages, model=request.model, **options)
     text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
 
@@ -131,7 +165,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         message=ChatMessage(role="assistant", content=text),
         done=True,
-        done_reason=_done_reason(result, options),
+        done_reason=generation_done_reason(result, options),
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,
