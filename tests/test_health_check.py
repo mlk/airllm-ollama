@@ -65,14 +65,14 @@ def test_check_service_reports_every_endpoint(mocker: MockerFixture) -> None:
     _urlopen_mock(
         mocker,
         {
-            "http://localhost:11434/": "airllm-ollama is running",
-            "http://localhost:11434/health": '{"status": "ok"}',
-            "http://localhost:11434/api/version": '{"version": "0.1.0"}',
-            "http://localhost:11434/api/tags": '{"models": [{"name": "test-model"}]}',
+            "http://localhost:8000/": "airllm-ollama is running",
+            "http://localhost:8000/health": '{"status": "ok"}',
+            "http://localhost:8000/api/version": '{"version": "0.1.0"}',
+            "http://localhost:8000/api/tags": '{"models": [{"name": "test-model"}]}',
         },
     )
 
-    results = check_service("http://localhost:11434/")
+    results = check_service("http://localhost:8000/")
 
     assert [result.path for result in results] == ["/", "/health", "/api/version", "/api/tags"]
     assert all(result.ok for result in results)
@@ -82,9 +82,9 @@ def test_check_service_reports_every_endpoint(mocker: MockerFixture) -> None:
 
 
 def test_check_service_reports_a_failing_endpoint(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}"))
+    _urlopen_mock(mocker, _bodies("http://localhost:8000", "{}"))
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert all(not result.ok for result in results)
 
@@ -93,7 +93,7 @@ def test_the_mock_rejects_unregistered_urls(mocker: MockerFixture) -> None:
     _urlopen_mock(mocker, {})
 
     with pytest.raises(KeyError):
-        check_service("http://localhost:11434")
+        check_service("http://localhost:8000")
 
 
 def test_check_service_reports_an_http_error(mocker: MockerFixture) -> None:
@@ -103,7 +103,7 @@ def test_check_service_reports_an_http_error(mocker: MockerFixture) -> None:
 
     mocker.patch("urllib.request.urlopen", side_effect=urlopen)
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert all(not result.ok for result in results)
     assert results[0].detail == "HTTP 503"
@@ -116,34 +116,34 @@ def test_check_service_reports_a_connection_error(mocker: MockerFixture) -> None
 
     mocker.patch("urllib.request.urlopen", side_effect=urlopen)
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert all(not result.ok for result in results)
     assert "connection refused" in results[0].detail
 
 
 def test_check_service_reports_an_invalid_body(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/health": "not json"}))
+    _urlopen_mock(mocker, _bodies("http://localhost:8000", "{}", **{"/health": "not json"}))
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert results[1].ok is False
     assert results[1].detail == "invalid JSON"
 
 
 def test_check_service_reports_a_missing_key(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/api/tags": '{"other": []}'}))
+    _urlopen_mock(mocker, _bodies("http://localhost:8000", "{}", **{"/api/tags": '{"other": []}'}))
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert results[3].ok is False
     assert results[3].detail == "missing 'models'"
 
 
 def test_check_service_reports_an_unexpected_root_response(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/": "hello"}))
+    _urlopen_mock(mocker, _bodies("http://localhost:8000", "{}", **{"/": "hello"}))
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert results[0].ok is False
     assert results[0].detail == "unexpected response"
@@ -152,10 +152,10 @@ def test_check_service_reports_an_unexpected_root_response(mocker: MockerFixture
 def test_the_summary_of_an_unknown_body_is_the_first_line(mocker: MockerFixture) -> None:
     _urlopen_mock(
         mocker,
-        _bodies("http://localhost:11434", "{}", **{"/health": "first line\nsecond line"}),
+        _bodies("http://localhost:8000", "{}", **{"/health": "first line\nsecond line"}),
     )
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert results[1].ok is False
     assert results[1].detail == "invalid JSON"
@@ -174,9 +174,9 @@ def test_the_summary_of_a_json_object_without_known_keys() -> None:
 
 
 def test_the_summary_of_a_json_array(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/health": "[1, 2]"}))
+    _urlopen_mock(mocker, _bodies("http://localhost:8000", "{}", **{"/health": "[1, 2]"}))
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert results[1].ok is False
     assert results[1].detail == "missing 'status'"
@@ -189,7 +189,7 @@ def test_a_response_with_an_error_status_fails_the_check(mocker: MockerFixture) 
 
     mocker.patch("urllib.request.urlopen", side_effect=urlopen)
 
-    results = check_service("http://localhost:11434")
+    results = check_service("http://localhost:8000")
 
     assert all(not result.ok for result in results)
     assert results[0].detail == "HTTP 500"
@@ -226,14 +226,14 @@ def test_check_returns_zero_when_everything_passes(mocker: MockerFixture) -> Non
     _urlopen_mock(
         mocker,
         {
-            "http://localhost:11434/": "airllm-ollama is running",
-            "http://localhost:11434/health": '{"status": "ok"}',
-            "http://localhost:11434/api/version": '{"version": "0.1.0"}',
-            "http://localhost:11434/api/tags": '{"models": []}',
+            "http://localhost:8000/": "airllm-ollama is running",
+            "http://localhost:8000/health": '{"status": "ok"}',
+            "http://localhost:8000/api/version": '{"version": "0.1.0"}',
+            "http://localhost:8000/api/tags": '{"models": []}',
         },
     )
 
-    assert check("http://localhost:11434") == 0
+    assert check("http://localhost:8000") == 0
 
 
 def test_check_returns_one_when_a_check_fails(mocker: MockerFixture) -> None:
@@ -243,7 +243,7 @@ def test_check_returns_one_when_a_check_fails(mocker: MockerFixture) -> None:
 
     mocker.patch("urllib.request.urlopen", side_effect=urlopen)
 
-    assert check("http://localhost:11434") == 1
+    assert check("http://localhost:8000") == 1
 
 
 def test_main_serves_by_default(mocker: MockerFixture) -> None:

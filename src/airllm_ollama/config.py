@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     app_name: str = "airllm-ollama-proxy"
     version: str = __version__
     host: str = "127.0.0.1"
-    port: int = 11434
+    port: int = 8000
     log_level: str = "INFO"
 
     # Name advertised through the Ollama API; also the only model the server serves.

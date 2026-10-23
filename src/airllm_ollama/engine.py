@@ -151,6 +151,20 @@ def model_names_match(requested: str, served: str) -> bool:
     return requested_tag == served_tag
 
 
+def _import_error(exc: ImportError) -> str:
+    """Return a helpful message for a failed import of the AirLLM runtime."""
+    if exc.name == "airllm":
+        return (
+            "The 'airllm' package is not installed. Install it with "
+            "`uv sync --extra airllm` to enable local inference."
+        )
+    missing = exc.name or "a dependency"
+    return (
+        f"The 'airllm' package is installed, but importing it failed: {missing} is missing. "
+        "On macOS AirLLM also needs Apple's MLX framework, which the 'airllm' extra installs."
+    )
+
+
 def default_model_factory(settings: Settings) -> AirLLMModelLike:
     """Instantiate the real AirLLM model for the configured path.
 
@@ -167,10 +181,7 @@ def default_model_factory(settings: Settings) -> AirLLMModelLike:
     try:
         from airllm import AutoModel
     except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise ModelInitializationError(
-            "The 'airllm' package is not installed. Install it with "
-            "`uv sync --extra airllm` to enable local inference."
-        ) from exc
+        raise ModelInitializationError(_import_error(exc)) from exc
 
     model_path = settings.resolved_model_path
     shard_options: dict[str, object] = {}
@@ -524,6 +535,8 @@ class AirLLMEngine:
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
         prompt_tokens = _sequence_length(input_ids)
+        prepared_ids = _prepare_input_ids(model, input_ids)
+        options = self._backend_options(model, kwargs)
         streamer = TextStreamer(model.tokenizer)
         outcome: list[object] = []
 
@@ -532,10 +545,10 @@ class AirLLMEngine:
             try:
                 outcome.append(
                     model.generate(
-                        input_ids,
+                        prepared_ids,
                         attention_mask=attention_mask,
                         streamer=streamer,
-                        **kwargs,
+                        **options,
                     )
                 )
             finally:
@@ -575,16 +588,29 @@ class AirLLMEngine:
             ),
         )
 
-    @staticmethod
-    def _run(model: AirLLMModelLike, prompt: str, **kwargs: object) -> tuple[object, int]:
+    def _run(self, model: AirLLMModelLike, prompt: str, **kwargs: object) -> tuple[object, int]:
         """Tokenize, generate and return the raw output plus the prompt length."""
         encoded = model.tokenizer(prompt, return_tensors="pt")
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
+        prompt_tokens = _sequence_length(input_ids)
+        options = self._backend_options(model, kwargs)
         # AirLLM backends accept the token ids positionally; the transformers
         # based one forwards them to `transformers.GenerationMixin.generate`.
-        raw_output = model.generate(input_ids, attention_mask=attention_mask, **kwargs)
-        return raw_output, _sequence_length(input_ids)
+        raw_output = model.generate(
+            _prepare_input_ids(model, input_ids), attention_mask=attention_mask, **options
+        )
+        return raw_output, prompt_tokens
+
+    def _backend_options(
+        self, model: AirLLMModelLike, kwargs: dict[str, object]
+    ) -> dict[str, object]:
+        """Return the generation options the backend understands."""
+        if not is_mlx_backend(model) or "max_new_tokens" in kwargs:
+            return kwargs
+        # The MLX backend stops after `max_new_tokens` tokens and has no
+        # default for it.
+        return {**kwargs, "max_new_tokens": self._settings.max_seq_len}
 
     @staticmethod
     def _count_generated_tokens(
@@ -605,6 +631,43 @@ class AirLLMEngine:
         if not decoded:
             return ""
         return decoded[0]
+
+
+def is_mlx_backend(model: object) -> bool:
+    """Return whether the model is AirLLM's MLX backend (used on macOS).
+
+    The MLX backend works on Apple's MLX arrays instead of the torch tensors
+    the transformers based backend expects. It is recognised by its name, so
+    that another backend is not mistaken for it.
+    """
+    kind = type(model)
+    return "mlx" in kind.__name__.lower() or "mlx" in kind.__module__.lower()
+
+
+def _prepare_input_ids(model: object, input_ids: object) -> object:
+    """Return the token ids in the format the backend expects."""
+    if not is_mlx_backend(model):
+        return input_ids
+    import mlx.core as mx
+
+    return mx.array(_as_nested_list(input_ids))
+
+
+def _as_nested_list(value: object) -> list[list[int]]:
+    """Return the token ids of a tensor or sequence as a nested list.
+
+    Values that carry no token ids (e.g. ``None``) yield an empty list.
+    """
+    to_list = getattr(value, "tolist", None)
+    if to_list is not None:
+        converted = to_list()
+    elif isinstance(value, (list, tuple)):
+        converted = list(value)
+    else:
+        converted = []
+    if converted and not isinstance(converted[0], list):
+        converted = [converted]
+    return [[int(item) for item in row] for row in converted]
 
 
 def _sequence_length(token_ids: object) -> int:
