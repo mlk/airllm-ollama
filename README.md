@@ -249,7 +249,8 @@ curl -N http://127.0.0.1:8000/api/generate \
 | `options.stop` | The response is cut at the first stop sequence |
 | `options.seed`, `mirostat*`, `presence_penalty`, `frequency_penalty` | Accepted, but not applied (no llama.cpp sampler) |
 | `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive. A service-wide default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` |
-| `raw`, `format`, `template`, `context`, `suffix` | Accepted, but not applied |
+| `raw` | Sends the prompt unchanged, without the chat template (like Ollama) |
+| `format`, `template`, `context`, `suffix` | Accepted, but not applied |
 
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
 model cannot be loaded and `400` for an invalid request body.

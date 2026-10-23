@@ -121,6 +121,21 @@ def test_api_generate_renders_the_system_prompt_with_the_chat_template(
     assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
 
 
+def test_api_generate_ignores_the_system_message_of_a_raw_request(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """`raw` asks for the prompt without the template."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse.", "raw": True},
+    )
+
+    assert factory.model.tokenizer.prompts == [PROMPT]
+    assert factory.model.tokenizer.rendered_messages == []
+
+
 def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
