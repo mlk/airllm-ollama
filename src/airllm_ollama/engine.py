@@ -317,13 +317,14 @@ class AirLLMEngine:
                 f"'{self._settings.model_name}'."
             )
 
-    def generate(self, prompt: str, **kwargs: object) -> str:
+    def generate(self, prompt: str, *, model: str | None = None, **kwargs: object) -> str:
         """Generate text for ``prompt``.
 
         Args:
             prompt: The prompt to complete.
-            **kwargs: Generation options forwarded to AirLLM. The reserved
-                ``model`` keyword is used to validate the requested model.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+            **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
             The generated text.
@@ -332,15 +333,18 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self.generate_result(prompt, **kwargs).text
+        return self.generate_result(prompt, model=model, **kwargs).text
 
-    def generate_result(self, prompt: str, **kwargs: object) -> GenerationResult:
+    def generate_result(
+        self, prompt: str, *, model: str | None = None, **kwargs: object
+    ) -> GenerationResult:
         """Generate text for ``prompt`` and report the generation statistics.
 
         Args:
             prompt: The prompt to complete.
-            **kwargs: Generation options forwarded to AirLLM. The reserved
-                ``model`` keyword is used to validate the requested model.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+            **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
             The generated text together with token counts and timings.
@@ -349,15 +353,20 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        requested_model = cast("str | None", kwargs.pop("model", None))
-        self.ensure_model_allowed(requested_model)
+        self.ensure_model_allowed(model)
         self.cancel_scheduled_unload()
         with self._generation_lock:
             started = time.perf_counter_ns()
-            model = self.load()
-            return self._run_prompt(model, prompt, started, **kwargs)
+            loaded_model = self.load()
+            return self._run_prompt(loaded_model, prompt, started, **kwargs)
 
-    def generate_chat(self, messages: Sequence[ChatTurn], **kwargs: object) -> GenerationResult:
+    def generate_chat(
+        self,
+        messages: Sequence[ChatTurn],
+        *,
+        model: str | None = None,
+        **kwargs: object,
+    ) -> GenerationResult:
         """Render a chat history and generate the assistant's answer.
 
         The history is rendered with the chat template of the model; models
@@ -365,8 +374,9 @@ class AirLLMEngine:
 
         Args:
             messages: The chat history as ``(role, content)`` pairs.
-            **kwargs: Generation options forwarded to AirLLM. The reserved
-                ``model`` keyword is used to validate the requested model.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+            **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
             The generated text together with token counts and timings.
@@ -375,14 +385,13 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        requested_model = cast("str | None", kwargs.pop("model", None))
-        self.ensure_model_allowed(requested_model)
+        self.ensure_model_allowed(model)
         self.cancel_scheduled_unload()
         with self._generation_lock:
             started = time.perf_counter_ns()
-            model = self.load()
-            prompt = render_chat(model.tokenizer, messages)
-            return self._run_prompt(model, prompt, started, **kwargs)
+            loaded_model = self.load()
+            prompt = render_chat(loaded_model.tokenizer, messages)
+            return self._run_prompt(loaded_model, prompt, started, **kwargs)
 
     def _run_prompt(
         self,

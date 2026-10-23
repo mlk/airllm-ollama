@@ -202,6 +202,11 @@ src/airllm_ollama/
   tested without a model.
 * `engine.generate_chat()` renders and generates in one go, under the same
   locks as `generate()`.
+* The `model` argument of `generate()`, `generate_result()` and
+  `generate_chat()` is an explicit keyword-only parameter: it is validated and
+  never forwarded to AirLLM. `ChatMessage.role` is free-form (Ollama is
+  permissive too); tool calls are not supported yet, so a `tool` role is
+  rendered like any other role.
 
 ## Data usage policy (important)
 

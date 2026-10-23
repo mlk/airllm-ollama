@@ -165,6 +165,16 @@ def test_generate_forwards_generation_options() -> None:
     assert kwargs["attention_mask"] == [1, 1, 1]
 
 
+def test_the_model_keyword_is_never_forwarded_to_the_model() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
+
+    engine.generate("Hello", model="my-model", max_new_tokens=8)
+
+    _, kwargs = factory.model.calls[0]
+    assert "model" not in kwargs
+
+
 def test_model_is_loaded_lazily_and_only_once() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)

@@ -8,7 +8,13 @@ from airllm_ollama.schemas.generate import GenerateOptions
 
 
 class ChatMessage(BaseModel):
-    """A single message of a chat history."""
+    """A single message of a chat history.
+
+    The role is free-form, like in Ollama: ``system``, ``user`` and
+    ``assistant`` are the common ones, but a chat template may use others.
+    Roles that the template does not know make the rendering fall back to the
+    plain transcript.
+    """
 
     role: str
     content: str
