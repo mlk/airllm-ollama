@@ -290,7 +290,7 @@ Assistant:
 ```bash
 # Check the endpoints of a running service
 uv run python -m airllm_ollama --check
-uv run python -m airllm_ollama --check --url http://127.0.0.1:11435
+uv run python -m airllm_ollama --check --url http://127.0.0.1:11435 --timeout 2
 ```
 
 ```

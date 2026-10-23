@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import uvicorn
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.health_check import check_service, format_results
+from airllm_ollama.health_check import DEFAULT_TIMEOUT, check_service, format_results
 
 
 def serve() -> None:
@@ -22,18 +22,19 @@ def serve() -> None:
     )
 
 
-def check(url: str | None) -> int:
+def check(url: str | None, timeout: float = DEFAULT_TIMEOUT) -> int:
     """Verify a running instance and report the result.
 
     Args:
         url: Base URL of the instance; defaults to the configured host/port.
+        timeout: Timeout of a single request in seconds.
 
     Returns:
         ``0`` when every check passed, ``1`` otherwise.
     """
     settings = get_settings()
     base_url = url or f"http://{settings.host}:{settings.port}"
-    results = check_service(base_url)
+    results = check_service(base_url, timeout=timeout)
     print(format_results(results))
     return 0 if all(result.ok for result in results) else 1
 
@@ -61,10 +62,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="base URL of the instance to check (default: the configured host/port)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help="timeout of a single request in seconds (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     if args.check:
-        return check(args.url)
+        return check(args.url, args.timeout)
     serve()
     return 0
 

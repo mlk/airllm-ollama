@@ -6,6 +6,7 @@ import io
 import urllib.error
 from typing import Any
 
+import pytest
 from pytest_mock import MockerFixture
 
 from airllm_ollama.__main__ import check, main
@@ -35,13 +36,29 @@ class _Response(io.BytesIO):
 
 
 def _urlopen_mock(mocker: MockerFixture, responses: dict[str, str]) -> Any:
-    """Return a mocked ``urlopen`` answering with the given bodies."""
+    """Return a mocked ``urlopen`` answering with the given bodies.
+
+    An unregistered URL raises a ``KeyError``, so a test cannot silently
+    receive the response of another endpoint.
+    """
 
     def urlopen(url: str, timeout: float = 5.0) -> _Response:
         """Answer with the body registered for the URL."""
-        return _Response(responses.get(url, "{}"))
+        if url not in responses:
+            raise KeyError(f"no response registered for {url}")
+        return _Response(responses[url])
 
     return mocker.patch("urllib.request.urlopen", side_effect=urlopen)
+
+
+ALL_PATHS = ("/", "/health", "/api/version", "/api/tags")
+
+
+def _bodies(root: str, body: str, **overrides: str) -> dict[str, str]:
+    """Return a body for every checked path; the overrides win per path."""
+    bodies = dict.fromkeys(ALL_PATHS, body)
+    bodies.update(overrides)
+    return {f"{root}{path}": value for path, value in bodies.items()}
 
 
 def test_check_service_reports_every_endpoint(mocker: MockerFixture) -> None:
@@ -65,11 +82,18 @@ def test_check_service_reports_every_endpoint(mocker: MockerFixture) -> None:
 
 
 def test_check_service_reports_a_failing_endpoint(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {})
+    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}"))
 
     results = check_service("http://localhost:11434")
 
     assert all(not result.ok for result in results)
+
+
+def test_the_mock_rejects_unregistered_urls(mocker: MockerFixture) -> None:
+    _urlopen_mock(mocker, {})
+
+    with pytest.raises(KeyError):
+        check_service("http://localhost:11434")
 
 
 def test_check_service_reports_an_http_error(mocker: MockerFixture) -> None:
@@ -99,7 +123,7 @@ def test_check_service_reports_a_connection_error(mocker: MockerFixture) -> None
 
 
 def test_check_service_reports_an_invalid_body(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {"http://localhost:11434/health": "not json"})
+    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/health": "not json"}))
 
     results = check_service("http://localhost:11434")
 
@@ -108,7 +132,7 @@ def test_check_service_reports_an_invalid_body(mocker: MockerFixture) -> None:
 
 
 def test_check_service_reports_a_missing_key(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {"http://localhost:11434/api/tags": '{"other": []}'})
+    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/api/tags": '{"other": []}'}))
 
     results = check_service("http://localhost:11434")
 
@@ -117,7 +141,7 @@ def test_check_service_reports_a_missing_key(mocker: MockerFixture) -> None:
 
 
 def test_check_service_reports_an_unexpected_root_response(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {"http://localhost:11434/": "hello"})
+    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/": "hello"}))
 
     results = check_service("http://localhost:11434")
 
@@ -126,7 +150,10 @@ def test_check_service_reports_an_unexpected_root_response(mocker: MockerFixture
 
 
 def test_the_summary_of_an_unknown_body_is_the_first_line(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {"http://localhost:11434/health": "first line\nsecond line"})
+    _urlopen_mock(
+        mocker,
+        _bodies("http://localhost:11434", "{}", **{"/health": "first line\nsecond line"}),
+    )
 
     results = check_service("http://localhost:11434")
 
@@ -147,7 +174,7 @@ def test_the_summary_of_a_json_object_without_known_keys() -> None:
 
 
 def test_the_summary_of_a_json_array(mocker: MockerFixture) -> None:
-    _urlopen_mock(mocker, {"http://localhost:11434/health": "[1, 2]"})
+    _urlopen_mock(mocker, _bodies("http://localhost:11434", "{}", **{"/health": "[1, 2]"}))
 
     results = check_service("http://localhost:11434")
 
@@ -230,3 +257,19 @@ def test_main_checks_an_instance(mocker: MockerFixture) -> None:
     mocker.patch("airllm_ollama.__main__.check", return_value=0)
 
     assert main(["--check", "--url", "http://example:1234"]) == 0
+
+
+def test_main_forwards_the_timeout(mocker: MockerFixture) -> None:
+    check = mocker.patch("airllm_ollama.__main__.check", return_value=0)
+
+    main(["--check", "--url", "http://example:1234", "--timeout", "1.5"])
+
+    check.assert_called_once_with("http://example:1234", 1.5)
+
+
+def test_check_passes_the_timeout_to_the_service(mocker: MockerFixture) -> None:
+    service = mocker.patch("airllm_ollama.__main__.check_service", return_value=[])
+
+    check("http://example:1234", 2.5)
+
+    service.assert_called_once_with("http://example:1234", timeout=2.5)

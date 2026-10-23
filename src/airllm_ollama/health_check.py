@@ -2,6 +2,9 @@
 
 The checks only use the standard library, so they can run against a service
 without installing anything.
+
+Only read-only endpoints are checked: a health probe must not trigger an
+inference. New read-only endpoints belong into :data:`CHECK_PATHS`.
 """
 
 from __future__ import annotations
@@ -93,8 +96,10 @@ def _summarise(body: str) -> str:
 
 def format_results(results: list[CheckResult]) -> str:
     """Render the results of a check as a human readable report."""
+    width = max((len(result.path) for result in results), default=0)
     lines = [
-        f"{'OK  ' if result.ok else 'FAIL'} {result.path:<14} {result.detail}" for result in results
+        f"{'OK  ' if result.ok else 'FAIL'} {result.path:<{width}}  {result.detail}"
+        for result in results
     ]
     failed = sum(1 for result in results if not result.ok)
     lines.append(f"{len(results) - failed}/{len(results)} checks passed")
