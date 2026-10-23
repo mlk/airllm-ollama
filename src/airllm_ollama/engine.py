@@ -415,7 +415,8 @@ class AirLLMEngine:
     def _generate(
         self,
         prompt: str,
-        system: str | None = None,
+        system: str | None,
+        /,
         *,
         model: str | None = None,
         **kwargs: object,

@@ -119,6 +119,12 @@ def test_api_generate_renders_the_system_prompt_with_the_chat_template(
     )
 
     assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [
+        [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": PROMPT},
+        ]
+    ]
 
 
 def test_api_generate_ignores_the_system_message_of_a_raw_request(
