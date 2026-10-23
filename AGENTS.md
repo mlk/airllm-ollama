@@ -143,8 +143,10 @@ src/airllm_ollama/
   AirLLM imports but does not depend on. The `airllm` extra installs it
   (`mlx>=0.21; sys_platform == 'darwin'`).
 * The MLX backend works on MLX arrays instead of torch tensors and needs a
-  `max_new_tokens`; `engine.is_mlx_backend()` detects it and the engine
-  converts the token ids (`mx.array(...)`) and sets the limit.
+  `max_new_tokens`; `engine.is_mlx_backend()` detects it (by its name) and the
+  engine converts the token ids (`mx.array(...)`) and sets the limit. Without
+  a `num_predict` in the request, the limit is `AIRLLM_OLLAMA_MAX_SEQ_LEN`
+  (512) — the transformers backend has no such default.
 * Model references follow Ollama's `name:tag` convention. `model_names_match()`
   accepts any tag when the served model has none, but demands an exact tag
   when the served model declares one (`llama3.2:1b` ≠ `llama3.2:70b`).

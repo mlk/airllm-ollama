@@ -637,9 +637,11 @@ def is_mlx_backend(model: object) -> bool:
     """Return whether the model is AirLLM's MLX backend (used on macOS).
 
     The MLX backend works on Apple's MLX arrays instead of the torch tensors
-    the transformers based backend expects.
+    the transformers based backend expects. It is recognised by its name, so
+    that another backend is not mistaken for it.
     """
-    return hasattr(model, "model_args")
+    kind = type(model)
+    return "mlx" in kind.__name__.lower() or "mlx" in kind.__module__.lower()
 
 
 def _prepare_input_ids(model: object, input_ids: object) -> object:
@@ -652,7 +654,10 @@ def _prepare_input_ids(model: object, input_ids: object) -> object:
 
 
 def _as_nested_list(value: object) -> list[list[int]]:
-    """Return the token ids of a tensor or sequence as a nested list."""
+    """Return the token ids of a tensor or sequence as a nested list.
+
+    Values that carry no token ids (e.g. ``None``) yield an empty list.
+    """
     to_list = getattr(value, "tolist", None)
     if to_list is not None:
         converted = to_list()

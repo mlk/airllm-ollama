@@ -446,6 +446,20 @@ def test_the_mlx_backend_is_detected() -> None:
     assert is_mlx_backend(FakeModel()) is False
 
 
+def test_a_model_with_a_model_args_attribute_is_not_mlx() -> None:
+    """The detection must not rely on an attribute of a single backend."""
+
+    class OtherModel(FakeModel):
+        """Model double of a backend that has its own arguments."""
+
+        def __init__(self) -> None:
+            """Create a model with a `model_args` attribute."""
+            super().__init__()
+            self.model_args = object()
+
+    assert is_mlx_backend(OtherModel()) is False
+
+
 def test_token_ids_are_converted_to_nested_lists() -> None:
     assert _as_nested_list([1, 2, 3]) == [[1, 2, 3]]
     assert _as_nested_list([[1, 2], [3, 4]]) == [[1, 2], [3, 4]]
