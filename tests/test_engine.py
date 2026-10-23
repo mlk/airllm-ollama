@@ -506,6 +506,22 @@ def test_the_transformers_backend_keeps_its_options() -> None:
     assert "max_new_tokens" not in model.calls[0][1]
 
 
+def test_render_prompt_uses_the_chat_template() -> None:
+    model = FakeModel()
+    model.tokenizer.template = "<|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    assert engine.render_prompt("hello", "Be terse.") == "<|im_start|>assistant\n"
+
+
+def test_render_prompt_without_a_system_message_does_not_load_the_model() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    assert engine.render_prompt("hello") == "hello"
+    assert factory.calls == []
+
+
 def test_generation_result_reports_the_statistics() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)

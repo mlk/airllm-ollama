@@ -30,6 +30,9 @@ def engine(mocker: MockerFixture) -> Any:
         total_duration_ns=4_000,
     )
     double.return_value.is_loaded = False
+    double.return_value.render_prompt.side_effect = lambda prompt, system=None: (
+        prompt if not system else f"{system}\n\n{prompt}"
+    )
     double.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
         [
             StreamChunk(text="the "),
@@ -102,12 +105,13 @@ def test_generate_without_options_does_not_sample(client: TestClient, engine: An
     assert "do_sample" not in kwargs
 
 
-def test_generate_prefixes_the_system_prompt(client: TestClient, engine: Any) -> None:
+def test_generate_renders_the_system_prompt(client: TestClient, engine: Any) -> None:
     client.post(
         "/api/generate",
         json={"model": MODEL, "prompt": "hello", "system": "You are helpful."},
     )
 
+    engine.return_value.render_prompt.assert_called_once_with("hello", "You are helpful.")
     engine.return_value.generate_result.assert_called_once_with(
         "You are helpful.\n\nhello", model=MODEL
     )

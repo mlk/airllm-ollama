@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from airllm_ollama.chat import ChatTurn, render_chat
+from airllm_ollama.chat import ChatTurn, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 from airllm_ollama.streaming import TextStreamer
@@ -400,6 +400,26 @@ class AirLLMEngine:
             started = time.perf_counter_ns()
             loaded_model = self.load()
             return self._run_prompt(loaded_model, prompt, started, **kwargs)
+
+    def render_prompt(self, prompt: str, system: str | None = None) -> str:
+        """Render a prompt together with its system message.
+
+        A model with a chat template expects the system message in the format
+        of that template, so both are rendered as a chat — the same way
+        ``/api/chat`` renders it. Models without a template get the plain
+        transcript.
+
+        Args:
+            prompt: The prompt of the user.
+            system: The system message, if any.
+
+        Returns:
+            The rendered prompt.
+        """
+        if not system:
+            return prompt
+        loaded_model = self.load()
+        return render_completion(loaded_model.tokenizer, prompt, system)
 
     def generate_chat(
         self,

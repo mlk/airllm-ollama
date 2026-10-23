@@ -28,6 +28,19 @@ milestones (epics):
 3. Open the PR with `gh pr create`, referencing the issue (`Closes #<n>`).
 4. CI must be green before the PR is considered done.
 5. Do not reformat or restructure unrelated code — keep diffs focused on the ticket.
+6. **Answer the automated review.** Every PR gets a `review` job (JetBrains
+   Junie, see `.junie/guidelines.md`). After opening the PR, wait for it to
+   finish (`gh pr checks <pr> --watch`), read the comment
+   (`gh pr view <pr> --json comments`) and deal with **every** suggestion:
+
+   * implement it (commit on the same branch, push again),
+   * ignore it — then say why in a reply to the comment,
+   * or, when it is valid but out of scope for this ticket, file a new issue
+     (`gh issue create`) or extend an existing one and reference that issue in
+     the reply.
+
+   A PR is not done before the reviewer has been answered. Do not leave a
+   suggestion unaddressed and unmentioned.
 
 ## Tooling
 
@@ -187,9 +200,10 @@ src/airllm_ollama/
 * `options.stop` is applied by cutting the response at the first stop sequence.
   This happens *after* the generation, not token by token — Ollama stops the
   model early. Fine for the non-streaming shortcut, revisit with streaming.
-* `system` is prepended to the prompt, separated by a blank line. Ollama renders
-  the system message with the model's chat template; a template aware rendering
-  belongs to the chat endpoint (issue #5).
+* `system` is rendered with the chat template of the model (issue #14):
+  `engine.render_prompt()` renders the system message and the prompt as a
+  chat, the same way `/api/chat` does. Models without a template get the plain
+  transcript of `chat.render_transcript()`.
 * `keep_alive` unloads the model after the given idle time. Without it the model
   stays in memory, because reloading an AirLLM checkpoint is expensive. The
   default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).

@@ -34,6 +34,26 @@ def render_transcript(messages: Sequence[ChatTurn]) -> str:
     return "\n\n".join(lines)
 
 
+def render_completion(tokenizer: object, prompt: str, system: str | None) -> str:
+    """Render a completion prompt together with its system message.
+
+    A model with a chat template expects the system message in the format of
+    that template, so both are rendered as a chat — the same way
+    ``/api/chat`` does it. Models without a template get the plain transcript.
+
+    Args:
+        tokenizer: The tokenizer of the model.
+        prompt: The prompt of the user.
+        system: The system message, if any.
+
+    Returns:
+        The rendered prompt.
+    """
+    if not system:
+        return prompt
+    return render_chat(tokenizer, [("system", system), ("user", prompt)])
+
+
 def render_chat(tokenizer: object, messages: Sequence[ChatTurn]) -> str:
     """Render a chat history with the chat template of the model.
 

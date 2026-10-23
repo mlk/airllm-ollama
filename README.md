@@ -241,7 +241,7 @@ curl -N http://127.0.0.1:8000/api/generate \
 | --- | --- |
 | `model` | Required; an unknown model is answered with `404` and `{"error": "..."}` |
 | `prompt` | The text to complete |
-| `system` | Prepended to the prompt, separated by a blank line |
+| `system` | Rendered with the chat template of the model, like `/api/chat` does; models without a template get the plain transcript |
 | `options.temperature` / `top_p` / `top_k` | Applied (and sampling is enabled) |
 | `options.num_predict` | Mapped to the number of generated tokens |
 | `options.num_ctx` | Mapped to the maximum sequence length |

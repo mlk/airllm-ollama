@@ -108,13 +108,28 @@ def test_api_generate_forwards_the_options(service: TestClient, factory: FakeFac
     assert kwargs["do_sample"] is True
 
 
-def test_api_generate_prefixes_the_system_prompt(service: TestClient, factory: FakeFactory) -> None:
+def test_api_generate_renders_the_system_prompt_with_the_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
     service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == [f"Be terse.\n\n{PROMPT}"]
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+
+
+def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert factory.model.tokenizer.prompts == [f"System: Be terse.\n\nUser: {PROMPT}\n\nAssistant:"]
 
 
 def test_api_generate_cuts_at_a_stop_sequence(service: TestClient, factory: FakeFactory) -> None:
