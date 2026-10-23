@@ -22,6 +22,9 @@ jobs:
           junie_api_key: ${{ secrets.JUNIE_API_KEY }}
           # Update the same comment on subsequent Junie runs instead of adding new comments
           use_single_comment: true
-          # Alternatively, write your custom review instructions in the prompt field
-          # instead of using the built-in "code-review" value
-          prompt: "code-review"
+          # Custom review prompt — see .junie/guidelines.md for detailed instructions
+          prompt: |
+            Review this pull request. Before reviewing, read AGENTS.md to understand the 
+            project's architecture, conventions, quality gates, and environment quirks. 
+            Follow the review guidelines in .junie/guidelines.md.
+          model: "opus"
