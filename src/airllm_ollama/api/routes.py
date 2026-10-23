@@ -13,6 +13,7 @@ from airllm_ollama.config import get_settings
 from airllm_ollama.engine import GenerationResult, get_engine
 from airllm_ollama.model_metadata import collect_metadata
 from airllm_ollama.options import apply_stop_sequences, map_options, parse_keep_alive
+from airllm_ollama.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from airllm_ollama.schemas.generate import GenerateRequest, GenerateResponse
 from airllm_ollama.schemas.health import HealthResponse
 from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
@@ -101,6 +102,43 @@ def _build_prompt(prompt: str, system: str | None) -> str:
     if not system:
         return prompt
     return f"{system}\n\n{prompt}"
+
+
+@api_router.post("/api/chat", response_model=ChatResponse, tags=["ollama"])
+async def chat(request: ChatRequest) -> ChatResponse:
+    """Answer a chat, as ``POST /api/chat`` does in Ollama.
+
+    The messages are rendered with the chat template of the model; models
+    without a template get a plain transcript. Only the non-streaming mode is
+    supported: the answer is returned as a single JSON object with ``done``
+    set to ``true``.
+    """
+    engine = get_engine()
+    messages = [(message.role, message.content) for message in request.messages]
+    options = map_options(request.options)
+    result = engine.generate_chat(messages, model=request.model, **options)
+    text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
+
+    settings = get_settings()
+    keep_alive = parse_keep_alive(
+        request.keep_alive if request.keep_alive is not None else settings.keep_alive
+    )
+    if keep_alive is not None:
+        engine.schedule_unload(keep_alive)
+
+    return ChatResponse(
+        model=request.model,
+        created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        message=ChatMessage(role="assistant", content=text),
+        done=True,
+        done_reason=_done_reason(result, options),
+        total_duration=result.total_duration_ns,
+        load_duration=result.load_duration_ns,
+        prompt_eval_count=result.prompt_tokens,
+        prompt_eval_duration=result.prompt_duration_ns,
+        eval_count=result.generated_tokens,
+        eval_duration=result.eval_duration_ns,
+    )
 
 
 @api_router.get("/api/tags", response_model=TagsResponse, tags=["ollama"])

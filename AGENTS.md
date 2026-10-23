@@ -108,6 +108,7 @@ src/airllm_ollama/
 | `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
 | `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
 | `POST` | `/api/generate` | `GenerateResponse` — Ollama's non-streaming generate shape |
+| `POST` | `/api/chat` | `ChatResponse` — Ollama's non-streaming chat shape |
 
 * The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
   real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
@@ -187,6 +188,20 @@ src/airllm_ollama/
   `engine.generate()` is the thin wrapper that only returns the text.
 * The engine counts the generated tokens by subtracting the prompt length from
   the returned sequence; backends that decode themselves are re-tokenized.
+
+### Chat (issue #5, done)
+
+* `POST /api/chat` takes Ollama's `messages` array and answers with a
+  `message` object (`role` + `content`) next to the same timings as
+  `/api/generate`.
+* `chat.render_chat()` renders the history with the chat template of the model
+  (`tokenizer.apply_chat_template`); models without a template get the plain
+  transcript of `chat.render_transcript()` (`User: ...\n\nAssistant:`).
+  A template that rejects the messages falls back to the transcript as well.
+* The rendering lives in `chat.py` and not in the route, so it can be unit
+  tested without a model.
+* `engine.generate_chat()` renders and generates in one go, under the same
+  locks as `generate()`.
 
 ## Data usage policy (important)
 

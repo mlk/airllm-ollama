@@ -157,6 +157,7 @@ work against this service unchanged.
 | `GET` | `/api/version` | Server version, as in Ollama |
 | `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |
 | `POST` | `/api/generate` | Completion, as in Ollama (non-streaming) |
+| `POST` | `/api/chat` | Chat completion, as in Ollama (non-streaming) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -240,6 +241,50 @@ the answer is always returned as a single object with `done: true`.
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
 model cannot be loaded and `400` for an invalid request body.
 
+### Chatting
+
+```bash
+curl http://127.0.0.1:11435/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "messages": [
+          {"role": "system", "content": "You are terse."},
+          {"role": "user", "content": "Why is the sky blue?"}
+        ]
+      }'
+```
+
+```json
+{
+  "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "created_at": "2026-10-23T12:00:19.123456Z",
+  "message": {"role": "assistant", "content": "Rayleigh scattering."},
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 812345678,
+  "load_duration": 402345678,
+  "prompt_eval_count": 12,
+  "prompt_eval_duration": 1200000,
+  "eval_count": 6,
+  "eval_duration": 408945678
+}
+```
+
+The history is rendered with the **chat template of the model**
+(`tokenizer.apply_chat_template`). Base models have no template — for them the
+history is flattened into a plain transcript:
+
+```
+System: You are terse.
+
+User: Why is the sky blue?
+
+Assistant:
+```
+
+`options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
+
 ### Running the tests
 
 ```bash
@@ -272,7 +317,8 @@ uv run pytest                # tests + coverage gate
 src/airllm_ollama/
 ├── __init__.py        # package exports
 ├── __main__.py        # `python -m airllm_ollama` entry point
-├── api/routes.py      # HTTP routes (/, /health, /api/version, /api/tags)
+├── api/routes.py      # HTTP routes (/, /health, /api/*)
+├── chat.py            # rendering of chat histories into a prompt
 ├── config.py          # environment-driven settings
 ├── engine.py          # AirLLM singleton wrapper (lazy load, thread-safe)
 ├── exceptions.py      # error hierarchy

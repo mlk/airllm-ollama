@@ -429,6 +429,44 @@ def test_cancel_scheduled_unload_keeps_the_model_loaded() -> None:
     assert engine.is_loaded is True
 
 
+def test_generate_chat_renders_the_history_and_generates() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    result = engine.generate_chat([("user", "Hello")])
+
+    assert factory.model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+    assert result.text == f"decoded:{TOKEN_IDS}"
+    assert result.total_duration_ns > 0
+
+
+def test_generate_chat_uses_the_chat_template() -> None:
+    class TemplateTokenizer(FakeTokenizer):
+        """Tokenizer double with a chat template."""
+
+        def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+            """Render the messages the way a chat template would."""
+            return f"templated:{messages}"
+
+    model = FakeModel()
+    model.tokenizer = TemplateTokenizer()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("user", "Hello")])
+
+    assert model.tokenizer.prompts[0].startswith("templated:")
+
+
+def test_generate_chat_rejects_a_mismatching_model() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
+
+    with pytest.raises(ModelMismatchError):
+        engine.generate_chat([("user", "Hello")], model="other-model")
+
+    assert factory.calls == []
+
+
 def test_generation_result_reports_the_statistics() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)
