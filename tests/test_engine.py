@@ -115,6 +115,14 @@ def _install_fake_airllm(
     monkeypatch.setitem(sys.modules, "airllm", module)
 
 
+def _wait_until_unloaded(engine: AirLLMEngine, timeout: float = 2.0) -> bool:
+    """Wait until the engine released the model, without a fixed sleep."""
+    deadline = time.monotonic() + timeout
+    while engine.is_loaded and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return not engine.is_loaded
+
+
 @pytest.fixture(autouse=True)
 def _reset_engine_singleton() -> None:
     """Keep the process-wide engine from leaking between tests."""
@@ -382,8 +390,8 @@ def test_schedule_unload_releases_the_model_after_the_delay() -> None:
     assert engine.is_loaded is True
 
     engine.schedule_unload(0.05)
-    time.sleep(0.3)
 
+    assert _wait_until_unloaded(engine) is True
     assert engine.is_loaded is False
 
 

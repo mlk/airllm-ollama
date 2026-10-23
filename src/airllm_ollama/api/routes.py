@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import get_engine
+from airllm_ollama.engine import GenerationResult, get_engine
 from airllm_ollama.model_metadata import collect_metadata
 from airllm_ollama.options import apply_stop_sequences, map_options, parse_keep_alive
 from airllm_ollama.schemas.generate import GenerateRequest, GenerateResponse
@@ -62,7 +62,10 @@ async def generate(request: GenerateRequest) -> GenerateResponse:
     result = engine.generate_result(prompt, model=request.model, **options)
     text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
 
-    keep_alive = parse_keep_alive(request.keep_alive)
+    settings = get_settings()
+    keep_alive = parse_keep_alive(
+        request.keep_alive if request.keep_alive is not None else settings.keep_alive
+    )
     if keep_alive is not None:
         engine.schedule_unload(keep_alive)
 
@@ -71,7 +74,7 @@ async def generate(request: GenerateRequest) -> GenerateResponse:
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         response=text,
         done=True,
-        done_reason="stop",
+        done_reason=_done_reason(result, options),
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,
@@ -79,6 +82,18 @@ async def generate(request: GenerateRequest) -> GenerateResponse:
         eval_count=result.generated_tokens,
         eval_duration=result.eval_duration_ns,
     )
+
+
+def _done_reason(result: GenerationResult, options: dict[str, object]) -> str:
+    """Return Ollama's reason for the end of the generation.
+
+    The generation stops either because the model finished its answer or
+    because it reached the requested number of tokens.
+    """
+    max_new_tokens = options.get("max_new_tokens")
+    if isinstance(max_new_tokens, int) and result.generated_tokens >= max_new_tokens:
+        return "length"
+    return "stop"
 
 
 def _build_prompt(prompt: str, system: str | None) -> str:

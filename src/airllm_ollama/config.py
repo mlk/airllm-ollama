@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Where AirLLM stores the per-layer shards it splits the checkpoint into.
     # Empty means "next to the checkpoint"; set it to keep the cache small.
     layer_shards_saving_path: str = ""
+    # Default lifetime of the loaded model, e.g. "5m". Empty means the model
+    # stays in memory until the process ends.
+    keep_alive: str = ""
 
     @property
     def resolved_model_path(self) -> str:

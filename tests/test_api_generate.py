@@ -187,6 +187,56 @@ def test_generate_accepts_unknown_options(client: TestClient, engine: Any) -> No
     assert "mirostat" not in kwargs
 
 
+def test_generate_reports_stop_when_the_model_finished(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_result.return_value = GenerationResult(
+        text="complete", generated_tokens=3
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": "hello", "options": {"num_predict": 128}},
+    )
+
+    assert response.json()["done_reason"] == "stop"
+
+
+def test_generate_reports_length_when_the_token_limit_is_reached(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_result.return_value = GenerationResult(
+        text="truncated", generated_tokens=128
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": "hello", "options": {"num_predict": 128}},
+    )
+
+    assert response.json()["done_reason"] == "length"
+
+
+def test_generate_uses_the_configured_default_keep_alive(
+    client: TestClient, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "10m")
+    get_settings.cache_clear()
+
+    client.post("/api/generate", json={"model": MODEL, "prompt": "hello"})
+
+    engine.return_value.schedule_unload.assert_called_once_with(600.0)
+
+
+def test_the_request_keep_alive_wins_over_the_configured_default(
+    client: TestClient, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "10m")
+    get_settings.cache_clear()
+
+    client.post("/api/generate", json={"model": MODEL, "prompt": "hello", "keep_alive": "5s"})
+
+    engine.return_value.schedule_unload.assert_called_once_with(5.0)
+
+
 def test_openapi_documents_the_generate_endpoint(client: TestClient) -> None:
     response = client.get("/openapi.json")
 

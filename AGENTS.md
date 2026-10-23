@@ -173,9 +173,16 @@ src/airllm_ollama/
   frequency penalties) are accepted and ignored — Ollama clients always send
   the full option set, so rejecting them would break the clients.
 * `options.stop` is applied by cutting the response at the first stop sequence.
-* `system` is prepended to the prompt, separated by a blank line.
+  This happens *after* the generation, not token by token — Ollama stops the
+  model early. Fine for the non-streaming shortcut, revisit with streaming.
+* `system` is prepended to the prompt, separated by a blank line. Ollama renders
+  the system message with the model's chat template; a template aware rendering
+  belongs to the chat endpoint (issue #5).
 * `keep_alive` unloads the model after the given idle time. Without it the model
-  stays in memory, because reloading an AirLLM checkpoint is expensive.
+  stays in memory, because reloading an AirLLM checkpoint is expensive. The
+  default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).
+* `done_reason` is `stop`, or `length` when the generation reached the
+  requested `num_predict` limit.
 * `engine.generate_result()` returns the text plus token counts and timings;
   `engine.generate()` is the thin wrapper that only returns the text.
 * The engine counts the generated tokens by subtracting the prompt length from

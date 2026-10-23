@@ -143,6 +143,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_DEVICE` | `cuda:0` | Device passed to AirLLM (ignored by the MLX backend) |
 | `AIRLLM_OLLAMA_MAX_SEQ_LEN` | `512` | Maximum context length |
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
+| `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 
 ### API
 
@@ -233,7 +234,7 @@ the answer is always returned as a single object with `done: true`.
 | `options.repeat_penalty` | Mapped to the repetition penalty |
 | `options.stop` | The response is cut at the first stop sequence |
 | `options.seed`, `mirostat*`, `presence_penalty`, `frequency_penalty` | Accepted, but not applied (no llama.cpp sampler) |
-| `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive |
+| `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive. A service-wide default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` |
 | `raw`, `format`, `template`, `context`, `suffix` | Accepted, but not applied |
 
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
