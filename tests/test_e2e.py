@@ -327,6 +327,10 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert "".join(event["response"] for event in events[:-1]) == "blue sky"
     assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.rendered_messages == [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": PROMPT},
+    ]
 
 
 def test_a_backend_without_streaming_delivers_the_whole_answer(
