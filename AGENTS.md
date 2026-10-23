@@ -94,9 +94,34 @@ src/airllm_ollama/
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
 ├── main.py            # create_app() factory + module-level `app`
+├── model_metadata.py  # checkpoint metadata read from the local checkpoint
 ├── schemas/           # pydantic request/response models
 └── version.py         # __version__ (must match pyproject.toml version)
 ```
+
+### Endpoints (issue #3, done)
+
+| Method | Path | Payload |
+| --- | --- | --- |
+| `GET` | `/` | Plain text — `airllm-ollama is running` / `airllm-ollama is kinda running` |
+| `GET` | `/health` | `HealthResponse` — status, version, model, `model_loaded` |
+| `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
+| `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
+
+* The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
+  real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
+  `details` (`parent_model`, `format`, `family`, `families`, `parameter_size`,
+  `quantization_level`, `context_length`) and `capabilities`.
+* `model_metadata.collect_metadata()` derives the metadata from the **local**
+  checkpoint: file sizes, `sha256` digest of the weights, `model_type` from
+  `config.json` and the parameter count from the safetensors header. It is
+  cached and never downloads anything — a model that was not fetched yet is
+  listed with empty metadata.
+* The metadata cache is keyed by the model path and holds the four most recent
+  entries; it is never invalidated automatically. Call
+  `clear_metadata_cache()` after the checkpoint on disk changed.
+* `capabilities` is currently hardcoded to `["completion"]` — extend it when
+  the chat/embedding endpoints land (issues #4/#5).
 
 ### Engine (issue #2, done)
 
@@ -115,6 +140,11 @@ src/airllm_ollama/
 * The engine uses two locks: `_generation_lock` covers the *whole* inference
   call (AirLLM's streaming hooks mutate shared model state), `_load_lock` only
   guards model creation so `load()` never blocks behind a running inference.
+* `engine.is_available` reports whether the optional AirLLM runtime is
+  installed. It uses `importlib.util.find_spec` — the package is never
+  imported, because importing `airllm` pulls in torch and takes seconds.
+  `GET /` uses it to answer `airllm-ollama is running` (runtime present) or
+  `airllm-ollama is kinda running` (runtime missing, inference would fail).
 
 ## API layer notes (for issues #3–#5)
 

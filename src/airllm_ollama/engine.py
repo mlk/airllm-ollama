@@ -11,12 +11,25 @@ AirLLM itself is an optional dependency (it pulls in ``torch`` and
 
 from __future__ import annotations
 
+import importlib.util
 import threading
 from collections.abc import Callable, Mapping
 from typing import Protocol, cast
 
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+
+
+def is_airllm_installed() -> bool:
+    """Return whether the optional AirLLM runtime is available.
+
+    The package is *not* imported: importing ``airllm`` pulls in torch and
+    takes seconds, which is far too slow for a status endpoint.
+    """
+    try:
+        return importlib.util.find_spec("airllm") is not None
+    except (ImportError, ValueError):  # pragma: no cover - defensive
+        return False
 
 
 class TokenizerLike(Protocol):
@@ -203,6 +216,15 @@ class AirLLMEngine:
     def is_loaded(self) -> bool:
         """Return whether the model is currently loaded in memory."""
         return self._model is not None
+
+    @property
+    def is_available(self) -> bool:
+        """Return whether the AirLLM runtime is installed.
+
+        A service without the AirLLM extra still answers requests, but every
+        inference attempt fails with a :class:`ModelInitializationError`.
+        """
+        return is_airllm_installed()
 
     def load(self) -> AirLLMModelLike:
         """Load the model if needed and return it.

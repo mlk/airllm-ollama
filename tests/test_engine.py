@@ -13,12 +13,14 @@ from collections.abc import Callable, Mapping
 from types import ModuleType
 
 import pytest
+from pytest_mock import MockerFixture
 
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
     default_model_factory,
     get_engine,
+    is_airllm_installed,
     model_names_match,
     normalize_model_name,
     reset_engine,
@@ -443,6 +445,36 @@ def test_empty_decoding_yields_empty_text() -> None:
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
     assert engine.generate("Hello") == ""
+
+
+def test_engine_reports_whether_airllm_is_installed() -> None:
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory())
+
+    assert engine.is_available is is_airllm_installed()
+
+
+def test_airllm_availability_check_does_not_import_the_package(
+    mocker: MockerFixture,
+) -> None:
+    find_spec = mocker.patch("airllm_ollama.engine.importlib.util.find_spec", return_value=object())
+
+    assert is_airllm_installed() is True
+    find_spec.assert_called_once_with("airllm")
+    assert "airllm" not in sys.modules
+
+
+def test_airllm_availability_is_false_when_the_package_is_missing(
+    mocker: MockerFixture,
+) -> None:
+    mocker.patch("airllm_ollama.engine.importlib.util.find_spec", return_value=None)
+
+    assert is_airllm_installed() is False
+
+
+def test_airllm_availability_survives_a_broken_lookup(mocker: MockerFixture) -> None:
+    mocker.patch("airllm_ollama.engine.importlib.util.find_spec", side_effect=ImportError("broken"))
+
+    assert is_airllm_installed() is False
 
 
 def test_get_engine_returns_a_singleton() -> None:
