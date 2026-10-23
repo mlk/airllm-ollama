@@ -1,9 +1,16 @@
 """FastAPI application factory for the AirLLM Ollama wrapper."""
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 
+from airllm_ollama.api.errors import (
+    model_initialization_handler,
+    model_mismatch_handler,
+    validation_error_handler,
+)
 from airllm_ollama.api.routes import api_router
 from airllm_ollama.config import Settings, get_settings
+from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 
 DESCRIPTION = (
     "Ollama-compatible REST API backed by AirLLM layer-wise inference. "
@@ -28,6 +35,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=DESCRIPTION,
     )
     application.include_router(api_router)
+    application.add_exception_handler(ModelMismatchError, model_mismatch_handler)
+    application.add_exception_handler(ModelInitializationError, model_initialization_handler)
+    application.add_exception_handler(RequestValidationError, validation_error_handler)
     return application
 
 

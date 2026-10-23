@@ -18,6 +18,7 @@ from pytest_mock import MockerFixture
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
+    _sequence_length,
     default_model_factory,
     get_engine,
     is_airllm_installed,
@@ -112,6 +113,14 @@ def _install_fake_airllm(
     module = _FakeAirLLMModule("airllm")
     module.AutoModel = AutoModel
     monkeypatch.setitem(sys.modules, "airllm", module)
+
+
+def _wait_until_unloaded(engine: AirLLMEngine, timeout: float = 2.0) -> bool:
+    """Wait until the engine released the model, without a fixed sleep."""
+    deadline = time.monotonic() + timeout
+    while engine.is_loaded and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return not engine.is_loaded
 
 
 @pytest.fixture(autouse=True)
@@ -372,6 +381,97 @@ def test_unload_waits_for_a_running_generation() -> None:
 
     assert unloaded.is_set() is True
     assert engine.is_loaded is False
+
+
+def test_schedule_unload_releases_the_model_after_the_delay() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+    assert engine.is_loaded is True
+
+    engine.schedule_unload(0.05)
+
+    assert _wait_until_unloaded(engine) is True
+    assert engine.is_loaded is False
+
+
+def test_schedule_unload_with_zero_releases_the_model_at_once() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+
+    engine.schedule_unload(0)
+
+    assert engine.is_loaded is False
+
+
+def test_a_new_request_cancels_a_pending_unload() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+    engine.schedule_unload(0.2)
+
+    engine.generate("hi again")
+    time.sleep(0.4)
+
+    assert engine.is_loaded is True
+
+
+def test_cancel_scheduled_unload_keeps_the_model_loaded() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+    engine.schedule_unload(0.1)
+
+    engine.cancel_scheduled_unload()
+    time.sleep(0.3)
+
+    assert engine.is_loaded is True
+
+
+def test_generation_result_reports_the_statistics() -> None:
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    result = engine.generate_result("hi")
+
+    assert result.text == f"decoded:{TOKEN_IDS}"
+    assert result.prompt_tokens == len(TOKEN_IDS)
+    assert result.generated_tokens == 0
+    assert result.total_duration_ns > 0
+    assert result.load_duration_ns > 0
+
+
+def test_generated_tokens_are_counted_for_token_backends() -> None:
+    factory = RecordingFactory(FakeModel(output=[[11, 22, 33, 44, 55]]))
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    result = engine.generate_result("hi")
+
+    assert result.generated_tokens == 2
+
+
+def test_generated_tokens_are_counted_for_text_backends() -> None:
+    factory = RecordingFactory(FakeModel(output="some text"))
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    result = engine.generate_result("hi")
+
+    assert result.generated_tokens == len(TOKEN_IDS)
+
+
+def test_sequence_length_handles_tensors_and_sequences() -> None:
+    class FakeTensor:
+        """Stand-in for a torch tensor."""
+
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            """Store the shape of the fake tensor."""
+            self.shape = shape
+
+    assert _sequence_length(FakeTensor((1, 7))) == 7
+    assert _sequence_length([1, 2, 3]) == 3
+    assert _sequence_length([[1, 2], [3, 4]]) == 2
+    assert _sequence_length(None) == 0
 
 
 def test_model_initialisation_failure_is_wrapped() -> None:

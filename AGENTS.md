@@ -107,6 +107,7 @@ src/airllm_ollama/
 | `GET` | `/health` | `HealthResponse` — status, version, model, `model_loaded` |
 | `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
 | `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
+| `POST` | `/api/generate` | `GenerateResponse` — Ollama's non-streaming generate shape |
 
 * The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
   real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
@@ -149,10 +150,43 @@ src/airllm_ollama/
 ## API layer notes (for issues #3–#5)
 
 * Map `ModelMismatchError` to **HTTP 404** (Ollama's behaviour for an unknown
-  model), not 500. `ModelInitializationError` maps to 503.
+  model), not 500. `ModelInitializationError` maps to 503. A malformed request
+  body is answered with **400** (not FastAPI's default 422) so the error shape
+  stays Ollama compatible. All three are implemented in `api/errors.py` and
+  registered in `create_app()`.
+* Ollama's error body is `{"error": "..."}` — use it for every error.
 * `get_engine()` caches the engine for the process lifetime; settings are read
   once at startup. Call `reset_engine()` when the settings change (tests,
   hot reloads) — the singleton is *not* invalidated automatically.
+
+### Generation (issue #4, done)
+
+* `POST /api/generate` mirrors Ollama's non-streaming response
+  (`response`, `done`, `done_reason`, `total_duration`, `load_duration`,
+  `prompt_eval_count`, `prompt_eval_duration`, `eval_count`, `eval_duration`;
+  the field names were taken from the Ollama binary). `stream` is accepted but
+  always answered non-streaming.
+* `options.py` translates Ollama's options into transformers keywords
+  (`num_predict` → `max_new_tokens`, `num_ctx` → `max_length`,
+  `repeat_penalty` → `repetition_penalty`, sampling parameters imply
+  `do_sample=True`). llama.cpp-only options (seed, Mirostat, presence and
+  frequency penalties) are accepted and ignored — Ollama clients always send
+  the full option set, so rejecting them would break the clients.
+* `options.stop` is applied by cutting the response at the first stop sequence.
+  This happens *after* the generation, not token by token — Ollama stops the
+  model early. Fine for the non-streaming shortcut, revisit with streaming.
+* `system` is prepended to the prompt, separated by a blank line. Ollama renders
+  the system message with the model's chat template; a template aware rendering
+  belongs to the chat endpoint (issue #5).
+* `keep_alive` unloads the model after the given idle time. Without it the model
+  stays in memory, because reloading an AirLLM checkpoint is expensive. The
+  default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).
+* `done_reason` is `stop`, or `length` when the generation reached the
+  requested `num_predict` limit.
+* `engine.generate_result()` returns the text plus token counts and timings;
+  `engine.generate()` is the thin wrapper that only returns the text.
+* The engine counts the generated tokens by subtracting the prompt length from
+  the returned sequence; backends that decode themselves are re-tokenized.
 
 ## Data usage policy (important)
 

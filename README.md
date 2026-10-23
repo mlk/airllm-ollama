@@ -143,6 +143,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_DEVICE` | `cuda:0` | Device passed to AirLLM (ignored by the MLX backend) |
 | `AIRLLM_OLLAMA_MAX_SEQ_LEN` | `512` | Maximum context length |
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
+| `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 
 ### API
 
@@ -155,6 +156,7 @@ work against this service unchanged.
 | `GET` | `/health` | Liveness probe; `model_loaded` tells whether the weights are in memory |
 | `GET` | `/api/version` | Server version, as in Ollama |
 | `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |
+| `POST` | `/api/generate` | Completion, as in Ollama (non-streaming) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -189,6 +191,54 @@ curl http://127.0.0.1:11435/api/tags
 `sha256` digest, architecture family and parameter count (read from the
 safetensors header). Nothing is ever downloaded to answer it; a model that has
 not been fetched yet is listed with empty metadata.
+
+### Generating
+
+```bash
+curl http://127.0.0.1:11435/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "prompt": "Why is the sky blue?",
+        "options": {"temperature": 0.7, "num_predict": 128}
+      }'
+```
+
+```json
+{
+  "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "created_at": "2026-10-23T11:45:10.123456Z",
+  "response": "The sky is blue because...",
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 812345678,
+  "load_duration": 402345678,
+  "prompt_eval_count": 6,
+  "prompt_eval_duration": 1200000,
+  "eval_count": 24,
+  "eval_duration": 408945678
+}
+```
+
+The endpoint answers in Ollama's non-streaming mode: `stream` is accepted but
+the answer is always returned as a single object with `done: true`.
+
+| Ollama request field | Behaviour |
+| --- | --- |
+| `model` | Required; an unknown model is answered with `404` and `{"error": "..."}` |
+| `prompt` | The text to complete |
+| `system` | Prepended to the prompt, separated by a blank line |
+| `options.temperature` / `top_p` / `top_k` | Applied (and sampling is enabled) |
+| `options.num_predict` | Mapped to the number of generated tokens |
+| `options.num_ctx` | Mapped to the maximum sequence length |
+| `options.repeat_penalty` | Mapped to the repetition penalty |
+| `options.stop` | The response is cut at the first stop sequence |
+| `options.seed`, `mirostat*`, `presence_penalty`, `frequency_penalty` | Accepted, but not applied (no llama.cpp sampler) |
+| `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive. A service-wide default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` |
+| `raw`, `format`, `template`, `context`, `suffix` | Accepted, but not applied |
+
+Errors follow Ollama's format: `404` for an unknown model, `503` when the
+model cannot be loaded and `400` for an invalid request body.
 
 ### Running the tests
 
