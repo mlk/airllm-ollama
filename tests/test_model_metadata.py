@@ -10,6 +10,7 @@ from pathlib import Path
 from airllm_ollama.model_metadata import (
     _family_from_architecture,
     _format_parameter_size,
+    clear_metadata_cache,
     collect_metadata,
 )
 
@@ -75,6 +76,19 @@ def test_metadata_is_cached(tmp_path: Path, write_checkpoint: Callable[..., Path
     second = collect_metadata(str(checkpoint))
 
     assert first is second
+
+
+def test_metadata_cache_can_be_cleared(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+
+    first = collect_metadata(str(checkpoint))
+    clear_metadata_cache()
+    second = collect_metadata(str(checkpoint))
+
+    assert first is not second
+    assert second == first
 
 
 def test_family_is_derived_from_the_architecture(

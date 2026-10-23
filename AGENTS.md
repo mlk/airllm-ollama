@@ -117,6 +117,11 @@ src/airllm_ollama/
   `config.json` and the parameter count from the safetensors header. It is
   cached and never downloads anything — a model that was not fetched yet is
   listed with empty metadata.
+* The metadata cache is keyed by the model path and holds the four most recent
+  entries; it is never invalidated automatically. Call
+  `clear_metadata_cache()` after the checkpoint on disk changed.
+* `capabilities` is currently hardcoded to `["completion"]` — extend it when
+  the chat/embedding endpoints land (issues #4/#5).
 
 ### Engine (issue #2, done)
 

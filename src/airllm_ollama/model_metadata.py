@@ -36,8 +36,10 @@ class CheckpointMetadata:
 def collect_metadata(model_path: str) -> CheckpointMetadata:
     """Return the metadata of the checkpoint at ``model_path``.
 
-    The result is cached: hashing a multi-hundred-megabyte checkpoint for every
-    request would be wasteful.
+    The result is cached per model path: hashing a multi-hundred-megabyte
+    checkpoint for every request would be wasteful. The cache holds the four
+    most recently used paths and is never invalidated automatically — call
+    :func:`clear_metadata_cache` after the checkpoint on disk changed.
 
     Args:
         model_path: Local checkpoint directory. Repository ids simply yield
@@ -49,9 +51,14 @@ def collect_metadata(model_path: str) -> CheckpointMetadata:
     return _collect_metadata(model_path)
 
 
+def clear_metadata_cache() -> None:
+    """Forget the cached metadata, e.g. after the checkpoint changed."""
+    _collect_metadata.cache_clear()
+
+
 @lru_cache(maxsize=4)
 def _collect_metadata(model_path: str) -> CheckpointMetadata:
-    """Collect the metadata of a checkpoint, caching the result."""
+    """Collect the metadata of a checkpoint, caching the result per path."""
     directory = Path(model_path)
     if not directory.is_dir():
         return CheckpointMetadata(
@@ -145,7 +152,13 @@ def _families(directory: Path) -> tuple[str, ...]:
 
 
 def _family_from_architecture(architecture: str) -> str:
-    """Derive the family name from a Hugging Face architecture name."""
+    """Derive the family name from a Hugging Face architecture name.
+
+    This is a best-effort heuristic: Hugging Face names its architectures
+    ``<Family><Variant>ForCausalLM``, so the family is the prefix in front of
+    the task suffix. An architecture that does not follow that pattern keeps
+    its own name (lower-cased) rather than reporting nothing.
+    """
     for suffix in (
         "ForConditionalGeneration",
         "ForSequenceClassification",
@@ -171,7 +184,12 @@ def _parameter_size(directory: Path) -> str:
 
 
 def _safetensors_parameter_count(weights: Path) -> int | None:
-    """Read ``total_parameters`` from the header of a safetensors file."""
+    """Read ``total_parameters`` from the header of a safetensors file.
+
+    ``__metadata__.total_parameters`` is a Hugging Face convention rather than
+    part of the safetensors specification, so the count is best effort: when
+    the field is missing the parameter size is reported as unknown.
+    """
     try:
         with weights.open("rb") as handle:
             (header_size,) = struct.unpack("<Q", handle.read(8))
