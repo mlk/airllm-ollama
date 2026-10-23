@@ -133,7 +133,7 @@ def test_api_generate_ignores_the_system_message_of_a_raw_request(
     )
 
     assert factory.model.tokenizer.prompts == [PROMPT]
-    assert factory.model.tokenizer.rendered_messages == []
+    assert factory.model.tokenizer.renderings == []
 
 
 def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
@@ -342,9 +342,11 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert "".join(event["response"] for event in events[:-1]) == "blue sky"
     assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
-    assert factory.model.tokenizer.rendered_messages == [
-        {"role": "system", "content": "Be terse."},
-        {"role": "user", "content": PROMPT},
+    assert factory.model.tokenizer.renderings == [
+        [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": PROMPT},
+        ]
     ]
 
 

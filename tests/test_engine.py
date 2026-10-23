@@ -511,7 +511,7 @@ def test_the_system_message_is_rendered_with_the_chat_template() -> None:
     model.tokenizer.template = "<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate("hello", "Be terse.")
+    engine.generate("hello", system="Be terse.")
 
     assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
 
@@ -531,7 +531,7 @@ def test_a_mismatching_model_is_rejected_before_the_model_is_loaded() -> None:
     engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
 
     with pytest.raises(ModelMismatchError):
-        engine.generate("hello", "Be terse.", model="other-model")
+        engine.generate("hello", system="Be terse.", model="other-model")
 
     assert factory.calls == []
 

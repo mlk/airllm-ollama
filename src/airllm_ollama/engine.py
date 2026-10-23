@@ -361,9 +361,9 @@ class AirLLMEngine:
     def generate(
         self,
         prompt: str,
-        system: str | None = None,
         *,
         model: str | None = None,
+        system: str | None = None,
         **kwargs: object,
     ) -> str:
         """Generate text for ``prompt``.
@@ -388,9 +388,9 @@ class AirLLMEngine:
     def generate_result(
         self,
         prompt: str,
-        system: str | None = None,
         *,
         model: str | None = None,
+        system: str | None = None,
         **kwargs: object,
     ) -> GenerationResult:
         """Generate text for ``prompt`` and report the generation statistics.
@@ -489,9 +489,9 @@ class AirLLMEngine:
     def generate_stream(
         self,
         prompt: str,
-        system: str | None = None,
         *,
         model: str | None = None,
+        system: str | None = None,
         **kwargs: object,
     ) -> Iterator[StreamChunk]:
         """Generate text, yielding the chunks as they are produced.
