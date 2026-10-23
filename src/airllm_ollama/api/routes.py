@@ -5,13 +5,14 @@ clients can talk to this service unchanged.
 """
 
 from fastapi import APIRouter
+from fastapi.responses import PlainTextResponse
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import get_engine
 from airllm_ollama.model_metadata import collect_metadata
 from airllm_ollama.schemas.health import HealthResponse
 from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
-from airllm_ollama.schemas.version import RootResponse, VersionResponse
+from airllm_ollama.schemas.version import VersionResponse
 
 api_router = APIRouter()
 
@@ -27,15 +28,15 @@ async def health() -> HealthResponse:
     )
 
 
-@api_router.get("/", response_model=RootResponse, tags=["meta"])
-async def root() -> RootResponse:
-    """Return basic information about the running service."""
-    settings = get_settings()
-    return RootResponse(
-        name=settings.app_name,
-        version=settings.version,
-        model=settings.model_name,
-    )
+@api_router.get("/", response_class=PlainTextResponse, tags=["meta"])
+async def root() -> PlainTextResponse:
+    """Announce the service, in the spirit of Ollama's own root response.
+
+    The service reports that it is only *kinda* running when the AirLLM
+    runtime is missing: the API answers, but inference is not possible.
+    """
+    status = "running" if get_engine().is_available else "kinda running"
+    return PlainTextResponse(f"airllm-ollama is {status}")
 
 
 @api_router.get("/api/version", response_model=VersionResponse, tags=["ollama"])

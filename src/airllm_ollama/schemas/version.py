@@ -9,11 +9,3 @@ class VersionResponse(BaseModel):
     """Payload returned by ``GET /api/version``."""
 
     version: str
-
-
-class RootResponse(BaseModel):
-    """Payload returned by ``GET /`` describing the running service."""
-
-    name: str
-    version: str
-    model: str

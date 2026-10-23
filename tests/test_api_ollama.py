@@ -27,14 +27,25 @@ def local_checkpoint(
     return checkpoint
 
 
-def test_root_reports_service_information(client: TestClient) -> None:
+def test_root_announces_a_running_service(client: TestClient, mocker: MockerFixture) -> None:
+    engine = mocker.patch("airllm_ollama.api.routes.get_engine")
+    engine.return_value.is_available = True
+
     response = client.get("/")
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["name"] == "airllm-ollama-proxy"
-    assert payload["version"] == get_settings().version
-    assert payload["model"] == get_settings().model_name
+    assert response.text == "airllm-ollama is running"
+    assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_root_announces_a_kinda_running_service(client: TestClient, mocker: MockerFixture) -> None:
+    engine = mocker.patch("airllm_ollama.api.routes.get_engine")
+    engine.return_value.is_available = False
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text == "airllm-ollama is kinda running"
 
 
 def test_api_version_matches_the_server_version(client: TestClient) -> None:

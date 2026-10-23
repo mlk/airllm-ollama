@@ -151,7 +151,7 @@ work against this service unchanged.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/` | Service name, version and the served model |
+| `GET` | `/` | Plain-text announcement: `airllm-ollama is running` (or `kinda running` without the AirLLM runtime) |
 | `GET` | `/health` | Liveness probe; `model_loaded` tells whether the weights are in memory |
 | `GET` | `/api/version` | Server version, as in Ollama |
 | `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |

@@ -103,7 +103,7 @@ src/airllm_ollama/
 
 | Method | Path | Payload |
 | --- | --- | --- |
-| `GET` | `/` | `RootResponse` — name, version, served model |
+| `GET` | `/` | Plain text — `airllm-ollama is running` / `airllm-ollama is kinda running` |
 | `GET` | `/health` | `HealthResponse` — status, version, model, `model_loaded` |
 | `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
 | `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
@@ -140,6 +140,11 @@ src/airllm_ollama/
 * The engine uses two locks: `_generation_lock` covers the *whole* inference
   call (AirLLM's streaming hooks mutate shared model state), `_load_lock` only
   guards model creation so `load()` never blocks behind a running inference.
+* `engine.is_available` reports whether the optional AirLLM runtime is
+  installed. It uses `importlib.util.find_spec` — the package is never
+  imported, because importing `airllm` pulls in torch and takes seconds.
+  `GET /` uses it to answer `airllm-ollama is running` (runtime present) or
+  `airllm-ollama is kinda running` (runtime missing, inference would fail).
 
 ## API layer notes (for issues #3–#5)
 
