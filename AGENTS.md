@@ -109,6 +109,20 @@ src/airllm_ollama/
   (Ollama's `:latest` tag is normalised away before comparing).
 * `airllm` is imported lazily inside `default_model_factory`; the factory is
   injectable so tests never import the runtime.
+* Model references follow Ollama's `name:tag` convention. `model_names_match()`
+  accepts any tag when the served model has none, but demands an exact tag
+  when the served model declares one (`llama3.2:1b` ≠ `llama3.2:70b`).
+* The engine uses two locks: `_generation_lock` covers the *whole* inference
+  call (AirLLM's streaming hooks mutate shared model state), `_load_lock` only
+  guards model creation so `load()` never blocks behind a running inference.
+
+## API layer notes (for issues #3–#5)
+
+* Map `ModelMismatchError` to **HTTP 404** (Ollama's behaviour for an unknown
+  model), not 500. `ModelInitializationError` maps to 503.
+* `get_engine()` caches the engine for the process lifetime; settings are read
+  once at startup. Call `reset_engine()` when the settings change (tests,
+  hot reloads) — the singleton is *not* invalidated automatically.
 
 ## Data usage policy (important)
 

@@ -18,8 +18,6 @@ from typing import Protocol, cast
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 
-LATEST_TAG = ":latest"
-
 
 class TokenizerLike(Protocol):
     """Minimal surface of the Hugging Face tokenizer used by the engine."""
@@ -49,9 +47,66 @@ class AirLLMModelLike(Protocol):
 ModelFactory = Callable[[Settings], AirLLMModelLike]
 
 
+def _split_model_reference(name: str) -> tuple[str, str | None]:
+    """Split an Ollama model reference into its name and its optional tag.
+
+    Args:
+        name: The model reference, e.g. ``llama3.2:1b``.
+
+    Returns:
+        A tuple of the base name and the tag (``None`` when the reference has
+        no tag).
+    """
+    head, separator, tail = name.rpartition(":")
+    if not separator:
+        return name, None
+    return head, tail
+
+
 def normalize_model_name(name: str) -> str:
-    """Strip Ollama's ``:latest`` tag so ``model`` and ``model:latest`` match."""
-    return name.removesuffix(LATEST_TAG)
+    """Return the base name of an Ollama model reference, without its tag.
+
+    Ollama references look like ``name:tag`` (``llama3.2:1b``); the tag is
+    separated from the name by the last colon.
+
+    Args:
+        name: The model reference to strip.
+
+    Returns:
+        The model name without its tag.
+    """
+    base, _tag = _split_model_reference(name)
+    return base
+
+
+def model_names_match(requested: str, served: str) -> bool:
+    """Return whether ``requested`` refers to the model this server serves.
+
+    The server hosts a single checkpoint, so a request for ``name:any-tag``
+    resolves to that checkpoint as long as the base names match. When the
+    served model declares an explicit tag (``llama3.2:1b``) the request has to
+    use that exact tag, so that a request for another variant
+    (``llama3.2:70b``) is rejected instead of silently answered with a
+    different model.
+
+    Args:
+        requested: The model reference asked for by the client.
+        served: The model reference this server is configured with.
+
+    Returns:
+        ``True`` when the request refers to the served model.
+    """
+    served_base, served_tag = _split_model_reference(served)
+    requested_base, requested_tag = _split_model_reference(requested)
+    if served_tag is None:
+        # The served model has no explicit tag: any tag resolves to it.
+        return requested_base == served_base
+    if requested_base != served_base:
+        return False
+    if requested_tag is None:
+        # The request has no tag: it refers to the served variant.
+        return True
+    return requested_tag == served_tag
 
 
 def default_model_factory(settings: Settings) -> AirLLMModelLike:
@@ -96,9 +151,19 @@ def default_model_factory(settings: Settings) -> AirLLMModelLike:
 class AirLLMEngine:
     """Owns a single AirLLM model and serialises access to it.
 
-    The model is loaded lazily on first use. All model interactions are guarded
-    by a re-entrant lock: AirLLM streams layer shards through a single set of
-    hooks, so concurrent generations would corrupt the shared state.
+    The model is loaded lazily on first use.
+
+    Two locks are used on purpose:
+
+    * ``_generation_lock`` serialises the inference calls. It is held for the
+      *whole* inference pass, not just for the model access: AirLLM streams the
+      layer shards of the checkpoint through a single set of forward hooks that
+      move weights between the meta device and the accelerator while they run.
+      Two concurrent generations would interleave those swaps and corrupt the
+      model state, so the lock has to cover the full call.
+    * ``_load_lock`` only guards the creation of the model, so that helpers
+      such as :meth:`load` do not have to wait for a running inference to
+      finish before they can hand out the already loaded model.
     """
 
     def __init__(
@@ -116,7 +181,8 @@ class AirLLMEngine:
         self._settings = settings or get_settings()
         self._model_factory = model_factory or default_model_factory
         self._model: AirLLMModelLike | None = None
-        self._lock = threading.RLock()
+        self._load_lock = threading.Lock()
+        self._generation_lock = threading.Lock()
 
     @property
     def settings(self) -> Settings:
@@ -142,15 +208,21 @@ class AirLLMEngine:
         """Load the model if needed and return it.
 
         Loading is idempotent: the model is created exactly once per engine.
+        The lock is only held while the model is created, so this call does not
+        block on a running inference.
         """
-        with self._lock:
+        with self._load_lock:
             if self._model is None:
                 self._model = self._model_factory(self._settings)
             return self._model
 
     def unload(self) -> None:
-        """Drop the loaded model so the next request reloads it."""
-        with self._lock:
+        """Drop the loaded model so the next request reloads it.
+
+        Waits for a running inference to finish so that the model is never
+        released while it is in use.
+        """
+        with self._generation_lock, self._load_lock:
             self._model = None
 
     def ensure_model_allowed(self, model: str | None) -> None:
@@ -165,7 +237,7 @@ class AirLLMEngine:
         """
         if model is None:
             return
-        if normalize_model_name(model) != normalize_model_name(self._settings.model_name):
+        if not model_names_match(model, self._settings.model_name):
             raise ModelMismatchError(
                 f"Model '{model}' is not available. This server serves a single model: "
                 f"'{self._settings.model_name}'."
@@ -188,7 +260,7 @@ class AirLLMEngine:
         """
         requested_model = cast("str | None", kwargs.pop("model", None))
         self.ensure_model_allowed(requested_model)
-        with self._lock:
+        with self._generation_lock:
             model = self.load()
             return self._generate(model, prompt, **kwargs)
 

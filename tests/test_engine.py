@@ -19,6 +19,7 @@ from airllm_ollama.engine import (
     AirLLMEngine,
     default_model_factory,
     get_engine,
+    model_names_match,
     normalize_model_name,
     reset_engine,
 )
@@ -216,9 +217,51 @@ def test_ensure_model_allowed_accepts_none() -> None:
     engine.ensure_model_allowed(None)
 
 
-def test_normalize_model_name_strips_latest_tag() -> None:
+def test_normalize_model_name_strips_the_tag() -> None:
     assert normalize_model_name("my-model:latest") == "my-model"
     assert normalize_model_name("my-model") == "my-model"
+    assert normalize_model_name("my-model:q4_0") == "my-model"
+    assert normalize_model_name("llama3.2:1b") == "llama3.2"
+    assert normalize_model_name("ns/my-model:v1.0") == "ns/my-model"
+
+
+@pytest.mark.parametrize(
+    "requested",
+    ["my-model", "my-model:latest", "my-model:q4_0", "my-model:v1.0"],
+)
+def test_any_tag_resolves_to_the_served_model(requested: str) -> None:
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=RecordingFactory())
+
+    engine.ensure_model_allowed(requested)
+
+
+@pytest.mark.parametrize("requested", ["other-model", "my-model-2", "ns/my-model"])
+def test_unknown_models_are_rejected(requested: str) -> None:
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=RecordingFactory())
+
+    with pytest.raises(ModelMismatchError):
+        engine.ensure_model_allowed(requested)
+
+
+def test_served_tag_must_match_exactly() -> None:
+    engine = AirLLMEngine(Settings(model_name="llama3.2:1b"), model_factory=RecordingFactory())
+
+    engine.ensure_model_allowed("llama3.2:1b")
+    engine.ensure_model_allowed("llama3.2")
+
+    with pytest.raises(ModelMismatchError):
+        engine.ensure_model_allowed("llama3.2:70b")
+
+    with pytest.raises(ModelMismatchError):
+        engine.ensure_model_allowed("llama3.1:1b")
+
+
+def test_model_names_match() -> None:
+    assert model_names_match("my-model", "my-model")
+    assert model_names_match("my-model:q4_0", "my-model")
+    assert not model_names_match("other-model", "my-model")
+    assert model_names_match("llama3.2", "llama3.2:1b")
+    assert not model_names_match("llama3.2:70b", "llama3.2:1b")
 
 
 def test_backend_returning_text_is_used_as_is() -> None:
@@ -260,6 +303,73 @@ def test_generation_is_serialised_across_threads() -> None:
 
     assert max_active == 1
     assert len(factory.calls) == 1
+
+
+def test_load_does_not_block_while_a_generation_runs() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingModel(FakeModel):
+        """Model double that blocks until it is released."""
+
+        def generate(self, *args: object, **kwargs: object) -> object:
+            """Wait for the test to release the call."""
+            started.set()
+            release.wait(timeout=5)
+            return self.output
+
+    factory = RecordingFactory(BlockingModel())
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    worker = threading.Thread(target=engine.generate, args=("prompt",))
+    worker.start()
+    assert started.wait(timeout=5)
+
+    loaded = engine.load()
+    release.set()
+    worker.join(timeout=5)
+
+    assert loaded is factory.model
+    assert worker.is_alive() is False
+
+
+def test_unload_waits_for_a_running_generation() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingModel(FakeModel):
+        """Model double that blocks until it is released."""
+
+        def generate(self, *args: object, **kwargs: object) -> object:
+            """Wait for the test to release the call."""
+            started.set()
+            release.wait(timeout=5)
+            return self.output
+
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(BlockingModel()))
+
+    worker = threading.Thread(target=engine.generate, args=("prompt",))
+    worker.start()
+    assert started.wait(timeout=5)
+
+    unloaded = threading.Event()
+
+    def unload() -> None:
+        """Unload while a generation is in flight."""
+        engine.unload()
+        unloaded.set()
+
+    unloader = threading.Thread(target=unload)
+    unloader.start()
+    unloader.join(timeout=0.2)
+    assert unloaded.is_set() is False
+
+    release.set()
+    worker.join(timeout=5)
+    unloader.join(timeout=5)
+
+    assert unloaded.is_set() is True
+    assert engine.is_loaded is False
 
 
 def test_model_initialisation_failure_is_wrapped() -> None:
