@@ -200,6 +200,19 @@ def test_the_version_endpoint_reports_the_version(service: TestClient) -> None:
     assert response.json() == {"version": get_settings().version}
 
 
+def test_a_wrong_model_is_rejected_before_the_model_is_loaded(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A wrong model must not load the checkpoint."""
+    response = service.post(
+        "/api/generate",
+        json={"model": "other-model", "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert response.status_code == 404
+    assert factory.calls == []
+
+
 def test_an_unknown_model_is_answered_with_404(service: TestClient) -> None:
     response = service.post("/api/generate", json={"model": "other-model", "prompt": PROMPT})
 

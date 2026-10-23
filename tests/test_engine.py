@@ -506,19 +506,33 @@ def test_the_transformers_backend_keeps_its_options() -> None:
     assert "max_new_tokens" not in model.calls[0][1]
 
 
-def test_render_prompt_uses_the_chat_template() -> None:
+def test_the_system_message_is_rendered_with_the_chat_template() -> None:
     model = FakeModel()
     model.tokenizer.template = "<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    assert engine.render_prompt("hello", "Be terse.") == "<|im_start|>assistant\n"
+    engine.generate("hello", "Be terse.")
+
+    assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
 
 
-def test_render_prompt_without_a_system_message_does_not_load_the_model() -> None:
+def test_without_a_system_message_the_prompt_is_not_rendered() -> None:
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello")
+
+    assert model.tokenizer.prompts == ["hello"]
+
+
+def test_a_mismatching_model_is_rejected_before_the_model_is_loaded() -> None:
+    """A wrong model must not load the checkpoint."""
     factory = RecordingFactory()
-    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
 
-    assert engine.render_prompt("hello") == "hello"
+    with pytest.raises(ModelMismatchError):
+        engine.generate("hello", "Be terse.", model="other-model")
+
     assert factory.calls == []
 
 

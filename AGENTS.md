@@ -200,10 +200,14 @@ src/airllm_ollama/
 * `options.stop` is applied by cutting the response at the first stop sequence.
   This happens *after* the generation, not token by token — Ollama stops the
   model early. Fine for the non-streaming shortcut, revisit with streaming.
-* `system` is rendered with the chat template of the model (issue #14):
-  `engine.render_prompt()` renders the system message and the prompt as a
-  chat, the same way `/api/chat` does. Models without a template get the plain
-  transcript of `chat.render_transcript()`.
+* `system` is rendered with the chat template of the model (issue #14): the
+  engine renders the system message and the prompt as a chat
+  (`chat.render_completion()`), the same way `/api/chat` does it. Models
+  without a template get the plain transcript of `chat.render_transcript()`.
+  The rendering happens under the generation lock, after the model was
+  validated and loaded — a wrong model never loads the checkpoint.
+* The template is only applied when a `system` message is present; Ollama
+  applies it to every prompt (unless `raw` is set). Tracked separately.
 * `keep_alive` unloads the model after the given idle time. Without it the model
   stays in memory, because reloading an AirLLM checkpoint is expensive. The
   default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).

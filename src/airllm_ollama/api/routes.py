@@ -67,13 +67,13 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
     """
     engine = get_engine()
     options = map_options(request.options)
-    prompt = engine.render_prompt(request.prompt, request.system)
     if request.stream:
         engine.prepare(request.model)
         return _stream_response(
             generate_events(
                 engine,
-                prompt,
+                request.prompt,
+                system=request.system,
                 model=request.model,
                 options=options,
                 stop=request.options.stop if request.options else None,
@@ -81,7 +81,9 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
             engine,
             request.keep_alive,
         )
-    result = engine.generate_result(prompt, model=request.model, **options)
+    result = engine.generate_result(
+        request.prompt, system=request.system, model=request.model, **options
+    )
     text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
 
     settings = get_settings()
