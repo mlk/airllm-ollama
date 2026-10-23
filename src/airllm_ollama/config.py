@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # Default lifetime of the loaded model, e.g. "5m". Empty means the model
     # stays in memory until the process ends.
     keep_alive: str = ""
+    # Framing of the streaming responses: "ndjson" (like Ollama) or "sse".
+    stream_format: str = "ndjson"
 
     @property
     def resolved_model_path(self) -> str:

@@ -6,7 +6,8 @@ with a ``generate`` method.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import cast
 
 TOKEN_IDS = [11, 22, 33]
 
@@ -40,15 +41,27 @@ class FakeTokenizer:
 class FakeModel:
     """AirLLM model double recording how it was called."""
 
-    def __init__(self, output: object = None) -> None:
-        """Create a model returning ``output`` (token ids by default)."""
+    def __init__(self, output: object = None, chunks: list[str] | None = None) -> None:
+        """Create a model returning ``output`` (token ids by default).
+
+        Args:
+            output: The value the generation returns.
+            chunks: The text pieces the model streams to a streamer, if any.
+        """
         self.tokenizer = FakeTokenizer()
         self.output = list(TOKEN_IDS) if output is None else output
+        self.chunks = chunks or []
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def generate(self, *args: object, **kwargs: object) -> object:
-        """Record the call and return the canned output."""
+        """Record the call, stream the chunks and return the canned output."""
         self.calls.append((args, kwargs))
+        streamer = kwargs.get("streamer")
+        if streamer is not None:
+            put = cast("Callable[[str], None] | None", getattr(streamer, "put", None))
+            if put is not None:
+                for chunk in self.chunks:
+                    put(chunk)
         return self.output
 
 

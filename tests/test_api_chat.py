@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import GenerationResult
+from airllm_ollama.engine import GenerationResult, StreamChunk
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
@@ -33,6 +34,16 @@ def engine(mocker: MockerFixture) -> Any:
         total_duration_ns=4_000,
     )
     double.return_value.is_loaded = False
+    double.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="blue "),
+            StreamChunk(text="sky"),
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="blue sky", prompt_tokens=7, generated_tokens=3),
+            ),
+        ]
+    )
     return double
 
 
@@ -141,11 +152,61 @@ def test_chat_rejects_an_invalid_message(client: TestClient, engine: Any) -> Non
     assert "error" in response.json()
 
 
-def test_chat_accepts_a_streaming_request(client: TestClient, engine: Any) -> None:
+def test_chat_streams_the_answer(client: TestClient, engine: Any) -> None:
     response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES, "stream": True})
 
     assert response.status_code == 200
-    assert response.json()["done"] is True
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert [event["message"]["content"] for event in events[:-1]] == ["blue ", "sky"]
+    assert events[0]["message"]["role"] == "assistant"
+    assert events[0]["done"] is False
+    assert events[-1]["done"] is True
+    assert events[-1]["message"] == {"role": "assistant", "content": ""}
+    assert events[-1]["eval_count"] == 3
+
+
+def test_chat_cuts_the_stream_at_a_stop_sequence(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="before "),
+            StreamChunk(text="STOP after"),
+        ]
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"model": MODEL, "messages": MESSAGES, "stream": True, "options": {"stop": ["STOP"]}},
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["message"]["content"] for event in events) == "before "
+
+
+def test_chat_streams_the_rest_after_the_last_chunk(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(
+        [StreamChunk(text="blue "), StreamChunk(text="sky")]
+    )
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES, "stream": True})
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["message"]["content"] for event in events) == "blue sky"
+
+
+def test_chat_streams_a_held_back_tail(client: TestClient, engine: Any) -> None:
+    """A tail that could still become a stop sequence is sent at the end."""
+    engine.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(
+        [StreamChunk(text="blue ST")]
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"model": MODEL, "messages": MESSAGES, "stream": True, "options": {"stop": ["STOP"]}},
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["message"]["content"] for event in events) == "blue ST"
 
 
 def test_chat_schedules_the_unload(client: TestClient, engine: Any) -> None:

@@ -96,7 +96,9 @@ src/airllm_ollama/
 ├── health_check.py    # verification of a running instance
 ├── main.py            # create_app() factory + module-level `app`
 ├── model_metadata.py  # checkpoint metadata read from the local checkpoint
+├── options.py         # translation of Ollama's options + stop sequence filter
 ├── schemas/           # pydantic request/response models
+├── streaming.py       # streamer turning the generated tokens into text
 └── version.py         # __version__ (must match pyproject.toml version)
 ```
 
@@ -189,6 +191,27 @@ src/airllm_ollama/
   `engine.generate()` is the thin wrapper that only returns the text.
 * The engine counts the generated tokens by subtracting the prompt length from
   the returned sequence; backends that decode themselves are re-tokenized.
+
+### Streaming (issue #13, done)
+
+* `stream: true` on `/api/generate` and `/api/chat` returns a stream of JSON
+  objects, one per line (`application/x-ndjson`) — the format Ollama uses and
+  the one the official clients parse. `AIRLLM_OLLAMA_STREAM_FORMAT=sse` switches
+  to Server-Sent Events.
+* `engine.generate_stream()` / `engine.generate_chat_stream()` yield
+  `StreamChunk`s. The generation runs in a worker thread, because the model
+  only reports the produced tokens from the thread it runs in; the engine waits
+  for that thread before it releases the generation lock, so the model is never
+  used twice at the same time.
+* `streaming.TextStreamer` turns the tokens of the generation loop into text.
+  It handles both transformers variants (new tokens or the whole sequence).
+* The stop sequences are applied *while* streaming: `options.StopSequenceFilter`
+  holds back the tail that could still become a stop sequence, so a stop
+  sequence spanning two chunks is detected as well. The generation itself is
+  not stopped early yet (issue #15).
+* `engine.prepare()` validates the model and loads it *before* the response
+  headers are sent, so that a broken checkpoint becomes a 503 instead of a
+  truncated stream.
 
 ### Chat (issue #5, done)
 

@@ -144,6 +144,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_MAX_SEQ_LEN` | `512` | Maximum context length |
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
+| `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
 
 ### API
 
@@ -156,8 +157,8 @@ work against this service unchanged.
 | `GET` | `/health` | Liveness probe; `model_loaded` tells whether the weights are in memory |
 | `GET` | `/api/version` | Server version, as in Ollama |
 | `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |
-| `POST` | `/api/generate` | Completion, as in Ollama (non-streaming) |
-| `POST` | `/api/chat` | Chat completion, as in Ollama (non-streaming) |
+| `POST` | `/api/generate` | Completion, as in Ollama (streaming and non-streaming) |
+| `POST` | `/api/chat` | Chat completion, as in Ollama (streaming and non-streaming) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -221,8 +222,24 @@ curl http://127.0.0.1:11435/api/generate \
 }
 ```
 
-The endpoint answers in Ollama's non-streaming mode: `stream` is accepted but
-the answer is always returned as a single object with `done: true`.
+With `stream: true` the answer is streamed: one JSON object per line, each
+one a partial answer, the last one carrying the timings and `done: true` — the
+format Ollama uses (`application/x-ndjson`). The official Ollama clients parse
+the response line by line, so this is the default; Server-Sent Events can be
+selected with `AIRLLM_OLLAMA_STREAM_FORMAT=sse`.
+
+```bash
+curl -N http://127.0.0.1:11435/api/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "...", "prompt": "Why is the sky blue?", "stream": true}'
+```
+
+```
+{"model":"...","created_at":"...","response":"The ","done":false}
+{"model":"...","created_at":"...","response":"sky is ","done":false}
+{"model":"...","created_at":"...","response":"blue.","done":false}
+{"model":"...","created_at":"...","response":"","done":true,"done_reason":"stop", ...}
+```
 
 | Ollama request field | Behaviour |
 | --- | --- |
@@ -343,7 +360,9 @@ src/airllm_ollama/
 ├── exceptions.py      # error hierarchy
 ├── main.py            # FastAPI application factory
 ├── model_metadata.py  # checkpoint metadata (size, digest, family, params)
+├── options.py         # translation of Ollama's options
 ├── schemas/           # pydantic request/response models
+├── streaming.py       # streamer turning the generated tokens into text
 └── version.py         # package version
 tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml

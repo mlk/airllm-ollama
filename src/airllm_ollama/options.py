@@ -73,6 +73,82 @@ def apply_stop_sequences(text: str, stop: list[str] | None) -> str:
     return text[:cut]
 
 
+class StopSequenceFilter:
+    """Cuts a stream of text at the first stop sequence.
+
+    The filter keeps back the tail of the text that could still become the
+    beginning of a stop sequence, so a stop sequence spanning two chunks is
+    detected as well.
+    """
+
+    def __init__(self, stop: list[str] | None) -> None:
+        """Create a filter for the given stop sequences."""
+        self._stop = [sequence for sequence in (stop or []) if sequence]
+        self._text = ""
+        self._emitted = 0
+        self._stopped = False
+
+    @property
+    def stopped(self) -> bool:
+        """Return whether a stop sequence was seen."""
+        return self._stopped
+
+    def feed(self, chunk: str) -> str | None:
+        """Return the part of ``chunk`` that may be sent to the client.
+
+        Args:
+            chunk: The next piece of generated text.
+
+        Returns:
+            The text that may be emitted, or ``None`` when the generation has
+            to stop.
+        """
+        if self._stopped:
+            return None
+        self._text += chunk
+        cut = self._stop_index()
+        if cut != -1:
+            self._stopped = True
+            return self._pending(self._text[:cut])
+        return self._pending(self._text[: self._safe_length()])
+
+    def flush(self) -> str:
+        """Return the text that is still held back."""
+        if self._stopped:
+            return ""
+        return self._pending(self._text)
+
+    def _pending(self, text: str) -> str:
+        """Return the part of ``text`` that was not emitted yet."""
+        if len(text) <= self._emitted:
+            return ""
+        pending = text[self._emitted :]
+        self._emitted = len(text)
+        return pending
+
+    def _stop_index(self) -> int:
+        """Return the index of the first stop sequence, or ``-1``."""
+        cut = -1
+        for sequence in self._stop:
+            index = self._text.find(sequence)
+            if index != -1 and (cut == -1 or index < cut):
+                cut = index
+        return cut
+
+    def _safe_length(self) -> int:
+        """Return the length of the text that can be emitted safely."""
+        if not self._stop:
+            return len(self._text)
+        longest = max(len(sequence) for sequence in self._stop)
+        keep = min(longest - 1, len(self._text))
+        while keep > 0:
+            tail = self._text[-keep:]
+            if any(sequence.startswith(tail) for sequence in self._stop):
+                break
+            keep -= 1
+        return len(self._text) - keep
+
+
 def parse_keep_alive(keep_alive: str | None) -> float | None:
     """Parse Ollama's ``keep_alive`` value into a number of seconds.
 

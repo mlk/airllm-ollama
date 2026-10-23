@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import GenerationResult
+from airllm_ollama.engine import GenerationResult, StreamChunk
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
@@ -29,6 +30,16 @@ def engine(mocker: MockerFixture) -> Any:
         total_duration_ns=4_000,
     )
     double.return_value.is_loaded = False
+    double.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="the "),
+            StreamChunk(text="sky"),
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="the sky", prompt_tokens=4, generated_tokens=3),
+            ),
+        ]
+    )
     return double
 
 
@@ -145,14 +156,85 @@ def test_generate_rejects_an_invalid_payload(client: TestClient, engine: Any) ->
     assert "error" in response.json()
 
 
-def test_generate_accepts_a_streaming_request(client: TestClient, engine: Any) -> None:
-    """Streaming is not implemented, the answer is returned as one object."""
+def test_generate_streams_the_answer(client: TestClient, engine: Any) -> None:
     response = client.post(
         "/api/generate", json={"model": MODEL, "prompt": "hello", "stream": True}
     )
 
     assert response.status_code == 200
-    assert response.json()["done"] is True
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert [event["response"] for event in events[:-1]] == ["the ", "sky"]
+    assert events[0]["done"] is False
+    assert events[0]["model"] == MODEL
+    assert events[-1]["done"] is True
+    assert events[-1]["response"] == ""
+    assert events[-1]["eval_count"] == 3
+    assert events[-1]["prompt_eval_count"] == 4
+
+
+def test_generate_streams_the_rest_after_the_last_chunk(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [StreamChunk(text="the "), StreamChunk(text="sky")]
+    )
+
+    response = client.post(
+        "/api/generate", json={"model": MODEL, "prompt": "hello", "stream": True}
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events) == "the sky"
+
+
+def test_a_stream_sends_a_held_back_tail(client: TestClient, engine: Any) -> None:
+    """A tail that could still become a stop sequence is sent at the end."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [StreamChunk(text="the ST")]
+    )
+
+    response = client.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": "hello",
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events) == "the ST"
+
+
+def test_a_stream_schedules_the_unload(client: TestClient, engine: Any) -> None:
+    client.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": "hello", "stream": True, "keep_alive": "90s"},
+    )
+
+    engine.return_value.schedule_unload.assert_called_once_with(90.0)
+
+
+def test_a_stream_rejects_an_unknown_model(client: TestClient, engine: Any) -> None:
+    engine.return_value.prepare.side_effect = ModelMismatchError("model 'x' not found")
+
+    response = client.post(
+        "/api/generate", json={"model": "other-model", "prompt": "hello", "stream": True}
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"error": "model 'x' not found"}
+
+
+def test_a_stream_reports_a_model_that_cannot_be_loaded(client: TestClient, engine: Any) -> None:
+    engine.return_value.prepare.side_effect = ModelInitializationError("no airllm")
+
+    response = client.post(
+        "/api/generate", json={"model": MODEL, "prompt": "hello", "stream": True}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "no airllm"}
 
 
 def test_generate_schedules_the_unload(client: TestClient, engine: Any) -> None:
