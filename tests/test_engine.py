@@ -474,6 +474,7 @@ def test_mlx_models_receive_an_mlx_array() -> None:
 
 
 def test_the_mlx_backend_gets_a_max_new_tokens() -> None:
+    pytest.importorskip("mlx.core")
     model = MlxModel()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
