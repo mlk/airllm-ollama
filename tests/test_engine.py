@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from types import ModuleType
 
 import pytest
@@ -27,57 +27,9 @@ from airllm_ollama.engine import (
     reset_engine,
 )
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from fakes import TOKEN_IDS, FakeModel, FakeTokenizer, RecordingFactory
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
-TOKEN_IDS = [11, 22, 33]
-
-
-class FakeTokenizer:
-    """Tokenizer double returning deterministic, easily assertable values."""
-
-    def __init__(self) -> None:
-        """Create an empty recorder."""
-        self.prompts: list[str] = []
-        self.decoded: list[object] = []
-
-    def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
-        """Return fake token ids for ``text``."""
-        self.prompts.append(text)
-        return {"input_ids": list(TOKEN_IDS), "attention_mask": [1, 1, 1]}
-
-    def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:
-        """Return a deterministic decoding of ``sequences``."""
-        self.decoded.append(sequences)
-        return [f"decoded:{sequences}"]
-
-
-class FakeModel:
-    """AirLLM model double recording how it was called."""
-
-    def __init__(self, output: object = None) -> None:
-        """Create a model returning ``output`` (token ids by default)."""
-        self.tokenizer = FakeTokenizer()
-        self.output = list(TOKEN_IDS) if output is None else output
-        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def generate(self, *args: object, **kwargs: object) -> object:
-        """Record the call and return the canned output."""
-        self.calls.append((args, kwargs))
-        return self.output
-
-
-class RecordingFactory:
-    """Model factory double counting how often the model was created."""
-
-    def __init__(self, model: FakeModel | None = None) -> None:
-        """Create a factory returning ``model``."""
-        self.model = model or FakeModel()
-        self.calls: list[Settings] = []
-
-    def __call__(self, settings: Settings) -> FakeModel:
-        """Record the settings and return the canned model."""
-        self.calls.append(settings)
-        return self.model
 
 
 class _FakeAirLLMModule(ModuleType):

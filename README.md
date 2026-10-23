@@ -285,6 +285,25 @@ Assistant:
 
 `options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
 
+### Verifying a running instance
+
+```bash
+# Check the endpoints of a running service
+uv run python -m airllm_ollama --check
+uv run python -m airllm_ollama --check --url http://127.0.0.1:11435 --timeout 2
+```
+
+```
+OK   /              airllm-ollama is running
+OK   /health        ok
+OK   /api/version   version 0.1.0
+OK   /api/tags      1 model(s)
+4/4 checks passed
+```
+
+The check verifies the status *and* the payload of every endpoint, and exits
+with `1` when something is wrong — handy as a container health probe.
+
 ### Running the tests
 
 ```bash
@@ -326,7 +345,7 @@ src/airllm_ollama/
 ├── model_metadata.py  # checkpoint metadata (size, digest, family, params)
 ├── schemas/           # pydantic request/response models
 └── version.py         # package version
-tests/                 # pytest suite
+tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml
 ```
 

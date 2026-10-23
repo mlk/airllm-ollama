@@ -93,6 +93,7 @@ src/airllm_ollama/
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
+├── health_check.py    # verification of a running instance
 ├── main.py            # create_app() factory + module-level `app`
 ├── model_metadata.py  # checkpoint metadata read from the local checkpoint
 ├── schemas/           # pydantic request/response models
@@ -228,6 +229,12 @@ The maintainer is on a **metered connection** — never download large artifacts
 
 * Tests live in `tests/`, mirroring the module path (`tests/test_api_health.py`,
   `tests/test_config.py`, `tests/test_main.py`).
+* `tests/test_e2e.py` is the integration suite: it drives the whole application
+  (routing → validation → engine → tokenizer → decoding) and replaces only the
+  AirLLM runtime with the doubles from `tests/fakes.py`. `tests/fakes.py` holds
+  the shared doubles — import them from there instead of copying them.
+* `python -m airllm_ollama --check` verifies a running instance; the logic
+  lives in `health_check.py` and only uses the standard library.
 * Use `pytest-mock`'s `mocker` fixture for patching third-party calls (e.g. AirLLM)
   so the suite stays fast and offline.
 * Shared fixtures live in `tests/conftest.py` (`app`, `client`, `settings`).
