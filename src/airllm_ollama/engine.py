@@ -515,17 +515,6 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        yield from self._stream_generation(prompt, system, model=model, **kwargs)
-
-    def _stream_generation(
-        self,
-        prompt: str,
-        system: str | None = None,
-        *,
-        model: str | None = None,
-        **kwargs: object,
-    ) -> Iterator[StreamChunk]:
-        """Validate the model, load it, render the prompt and stream."""
         self.ensure_model_allowed(model)
         self.cancel_scheduled_unload()
         with self._generation_lock:

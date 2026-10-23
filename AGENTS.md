@@ -207,7 +207,7 @@ src/airllm_ollama/
   The rendering happens under the generation lock, after the model was
   validated and loaded — a wrong model never loads the checkpoint.
 * The template is only applied when a `system` message is present; Ollama
-  applies it to every prompt (unless `raw` is set). Tracked separately.
+  applies it to every prompt (unless `raw` is set). Tracked in #31.
 * `keep_alive` unloads the model after the given idle time. Without it the model
   stays in memory, because reloading an AirLLM checkpoint is expensive. The
   default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).

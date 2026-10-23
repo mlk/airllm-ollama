@@ -306,6 +306,29 @@ def test_a_stream_rejects_an_unknown_model(service: TestClient) -> None:
     assert "error" in response.json()
 
 
+def test_a_stream_renders_the_system_prompt_with_the_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A streamed generation must not lose the system message."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.chunks = ["blue ", "sky"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "system": "Be terse.",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events[:-1]) == "blue sky"
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+
+
 def test_a_backend_without_streaming_delivers_the_whole_answer(
     service: TestClient, factory: FakeFactory
 ) -> None:

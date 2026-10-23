@@ -30,7 +30,6 @@ def engine(mocker: MockerFixture) -> Any:
         total_duration_ns=4_000,
     )
     double.return_value.is_loaded = False
-
     double.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
         [
             StreamChunk(text="the "),
