@@ -18,6 +18,7 @@ class FakeTokenizer:
     def __init__(self, template: str | None = None) -> None:
         """Create a tokenizer, optionally with a chat template."""
         self.prompts: list[str] = []
+        self.tokenizations: list[dict[str, object]] = []
         self.decoded: list[object] = []
         self.template = template
         self.renderings: list[list[dict[str, str]]] = []
@@ -25,7 +26,21 @@ class FakeTokenizer:
     def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
         """Return fake token ids for ``text``."""
         self.prompts.append(text)
-        return {"input_ids": list(TOKEN_IDS), "attention_mask": [1, 1, 1]}
+        self.tokenizations.append(dict(kwargs))
+        ids = self.token_ids(text, **kwargs)
+        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+    def token_ids(self, text: str, **kwargs: object) -> list[int]:
+        """Return the token ids of ``text``.
+
+        Args:
+            text: The text to tokenize.
+            **kwargs: The options of the tokenization.
+
+        Returns:
+            The token ids of the text.
+        """
+        return list(TOKEN_IDS)
 
     def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:
         """Return a deterministic decoding of ``sequences``."""
@@ -48,6 +63,34 @@ class FakeTokenizer:
                 ]
             )
         return self.template
+
+
+class BosTokenizer(FakeTokenizer):
+    """Tokenizer double that adds a BOS token, like the real ones do.
+
+    A chat template renders the BOS token of the model itself, so the double
+    counts the BOS tokens of the text and adds another one when the tokenizer
+    is allowed to add the special tokens.
+    """
+
+    BOS = 1
+    BOS_TEXT = "<|begin_of_text|>"
+
+    def token_ids(self, text: str, **kwargs: object) -> list[int]:
+        """Return the token ids of ``text`` with the BOS token of the text.
+
+        Args:
+            text: The text to tokenize.
+            **kwargs: The options of the tokenization.
+
+        Returns:
+            The token ids of the text.
+        """
+        ids = [self.BOS] * text.count(self.BOS_TEXT)
+        if kwargs.get("add_special_tokens") is not False:
+            ids.append(self.BOS)
+        ids.extend(TOKEN_IDS)
+        return ids
 
 
 class FakeModel:

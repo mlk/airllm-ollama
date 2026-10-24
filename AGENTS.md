@@ -212,6 +212,9 @@ src/airllm_ollama/
 * A request with `raw: true` is sent unchanged, without the template. The
   template is otherwise only applied when a `system` message is present; Ollama
   applies it to every prompt. Tracked in #31.
+* A raw prompt is tokenized with the special tokens, so a client that rendered
+  the template itself (and sends the BOS token with it) gets a second one.
+  Tracked in #44 — do not work around it with a heuristic.
 * `keep_alive` unloads the model after the given idle time. Without it the model
   stays in memory, because reloading an AirLLM checkpoint is expensive. The
   default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).
@@ -254,6 +257,18 @@ src/airllm_ollama/
   A template that rejects the messages falls back to the transcript as well.
 * The rendering lives in `chat.py` and not in the route, so it can be unit
   tested without a model.
+* `chat.render_chat()` and `chat.render_completion()` return a
+  `chat.RenderedPrompt`: the text **and** the way it has to be tokenized. A
+  chat template renders the special tokens of the model itself (Llama 3 starts
+  with `<|begin_of_text|>`), so a templated prompt is tokenized with
+  `add_special_tokens=False` — the template stays the single source of truth
+  and the model does not see a second BOS token. Every other prompt (a raw
+  prompt, the transcript fallback) is tokenized the way the tokenizer does it
+  by default, so a base model still gets its BOS token. This is the same
+  behaviour as `tokenizer.apply_chat_template(..., tokenize=True)`.
+* A template that does not render `{{ bos_token }}` therefore leaves the model
+  without a BOS token — the same as in transformers. Do not work around that
+  with a heuristic; the template is the single source of truth.
 * `engine.generate_chat()` renders and generates in one go, under the same
   locks as `generate()`.
 * The `model` argument of `generate()`, `generate_result()` and

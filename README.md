@@ -305,7 +305,10 @@ curl http://127.0.0.1:8000/api/chat \
 ```
 
 The history is rendered with the **chat template of the model**
-(`tokenizer.apply_chat_template`). Base models have no template — for them the
+(`tokenizer.apply_chat_template`). The template is the single source of truth
+for the format: it renders the special tokens of the model itself (Llama 3
+starts its chat with `<|begin_of_text|>`), so the rendered text is tokenized
+without adding them a second time. Base models have no template — for them the
 history is flattened into a plain transcript:
 
 ```
@@ -315,6 +318,10 @@ User: Why is the sky blue?
 
 Assistant:
 ```
+
+`prompt_eval_count` counts the tokens of the rendered prompt. Since the prompt
+is not tokenized twice, that count is one **lower** than it was before the
+double BOS token was removed — the number is the correct one now.
 
 `options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
 

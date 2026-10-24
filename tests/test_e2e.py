@@ -19,10 +19,12 @@ from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
-from fakes import TOKEN_IDS, FakeFactory, FakeModel
+from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel
 
 MODEL = "test-model"
 PROMPT = "Why is the sky blue?"
+BOS = BosTokenizer.BOS
+BOS_TEXT = BosTokenizer.BOS_TEXT
 
 
 def _build_service(
@@ -151,6 +153,62 @@ def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
     )
 
     assert factory.model.tokenizer.prompts == [f"System: Be terse.\n\nUser: {PROMPT}\n\nAssistant:"]
+
+
+def test_api_generate_does_not_add_a_second_bos_token(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The template renders the BOS token, the tokenizer must not add a second one."""
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
+
+    response = service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [f"{BOS_TEXT}<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt": PROMPT},
+        {"prompt": PROMPT, "system": "Be terse.", "raw": True},
+    ],
+)
+def test_api_generate_tokenizes_an_untemplated_prompt_with_the_special_tokens(
+    service: TestClient, factory: FakeFactory, payload: dict[str, object]
+) -> None:
+    """A prompt that no template rendered still needs the special tokens."""
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
+
+    response = service.post("/api/generate", json={"model": MODEL, **payload})
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [PROMPT]
+    assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/generate", {"prompt": PROMPT, "system": "Be terse."}),
+        ("/api/chat", {"messages": [{"role": "user", "content": PROMPT}]}),
+    ],
+)
+def test_the_model_does_not_see_two_bos_tokens(
+    service: TestClient, factory: FakeFactory, path: str, payload: dict[str, object]
+) -> None:
+    """The chat template renders the BOS token, the model must not see a second one."""
+    factory.model.tokenizer = BosTokenizer()
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
+
+    response = service.post(path, json={"model": MODEL, **payload})
+
+    assert response.status_code == 200
+    assert factory.model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
 
 def test_api_generate_cuts_at_a_stop_sequence(service: TestClient, factory: FakeFactory) -> None:
