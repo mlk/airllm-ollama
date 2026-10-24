@@ -1,4 +1,9 @@
-"""Guard against a drift between ``.env.example`` and the settings defaults."""
+"""Guard against a drift between the documentation and the settings defaults.
+
+The defaults of the settings are documented twice: in the example file
+``.env.example`` and in the settings table of the README. Both have to follow
+the code.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from pydantic import ValidationError
 from airllm_ollama.config import Settings
 
 ENV_EXAMPLE = pathlib.Path(__file__).parent.parent / ".env.example"
+README = pathlib.Path(__file__).parent.parent / "README.md"
 
 # pydantic-settings reads the environment regardless of the case, so the guard
 # has to do the same.
@@ -36,6 +42,13 @@ ACTIVE_SETTING = re.compile(
 COMMENTED_SETTING = re.compile(
     r"^#\s*(?:export\s+)?(?P<key>airllm_ollama_[A-Za-z0-9_]+)\s*=", re.IGNORECASE
 )
+
+# A row of the settings table of the README: the variable, its default and a
+# description. The default is written in backticks.
+README_ROW = re.compile(r"^\|\s*`(?P<key>AIRLLM_OLLAMA_[A-Za-z0-9_]+)`\s*\|\s*(?P<value>[^|]*)\|")
+
+# The README writes an empty default like this.
+EMPTY = "_(empty)_"
 
 
 def _defaults() -> dict[str, object]:
@@ -98,6 +111,90 @@ def _commented_values(text: str) -> dict[str, str]:
 def _documented_keys(text: str) -> set[str]:
     """Return every setting the given text mentions, active or commented out."""
     return set(_active_values(text)) | set(_commented_values(text))
+
+
+def _readme_values(text: str) -> dict[str, str]:
+    """Return the default the settings table of the README documents.
+
+    Args:
+        text: The content of the README.
+
+    Returns:
+        The documented default of every setting of the table.
+    """
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        match = README_ROW.match(line.strip())
+        if match is None:
+            continue
+        values[_name(match.group("key"))] = _readme_value(match.group("value"))
+    return values
+
+
+def _readme_value(cell: str) -> str:
+    """Return the value a cell of the settings table documents.
+
+    Args:
+        cell: The cell of the table.
+
+    Returns:
+        The documented value, without the backticks.
+    """
+    text = cell.strip()
+    if text == EMPTY:
+        return ""
+    if text.startswith("`") and text.endswith("`"):
+        return text[1:-1]
+    return text
+
+
+def _readme_mismatches(text: str) -> list[str]:
+    """Return the documented defaults that differ from the default of the setting.
+
+    Args:
+        text: The content of the README.
+
+    Returns:
+        A message for every setting whose documented default is not the real one.
+    """
+    mismatches: list[str] = []
+    defaults = _defaults()
+    for name, value in _readme_values(text).items():
+        if name not in defaults:
+            # An unknown setting is reported by the key check.
+            continue
+        if value != str(defaults[name]):
+            mismatches.append(f"{name} is documented as '{value}'")
+    return mismatches
+
+
+def _readme_keys(text: str) -> set[str]:
+    """Return the settings the settings table of the README documents.
+
+    Args:
+        text: The content of the README.
+
+    Returns:
+        The name of every documented setting.
+    """
+    return set(_readme_values(text))
+
+
+def _readme_duplicates(text: str) -> list[str]:
+    """Return the variables that the settings table documents more than once.
+
+    Args:
+        text: The content of the README.
+
+    Returns:
+        The name of every duplicated variable.
+    """
+    keys = [
+        match.group("key").lower()
+        for match in (README_ROW.match(line.strip()) for line in text.splitlines())
+        if match is not None
+    ]
+    return sorted({key for key in keys if keys.count(key) > 1})
 
 
 def _mismatches(text: str) -> list[str]:
@@ -285,3 +382,75 @@ def test_the_checks_report_a_stale_documented_default() -> None:
     text = "# AIRLLM_OLLAMA_STREAM_FORMAT=sse\n"
 
     assert _stale_commented_values(text) == ["stream_format is documented as 'sse'"]
+
+
+def test_every_default_of_the_readme_matches_the_default() -> None:
+    """The settings table of the README must not drift away from the defaults."""
+    mismatches = _readme_mismatches(README.read_text(encoding="utf-8"))
+
+    assert mismatches == [], f"the README documents outdated defaults: {mismatches}"
+
+
+def test_every_key_of_the_readme_names_a_setting() -> None:
+    """A renamed setting must not survive in the settings table of the README."""
+    text = README.read_text(encoding="utf-8")
+    unknown = sorted(name for name in _readme_keys(text) if name not in _defaults())
+
+    assert unknown == [], f"unknown settings in the README: {unknown}"
+
+
+def test_every_setting_is_documented_in_the_readme() -> None:
+    """A new setting has to be documented in the settings table of the README."""
+    text = README.read_text(encoding="utf-8")
+    undocumented = sorted(set(_defaults()) - _readme_keys(text) - UNDOCUMENTED)
+
+    assert undocumented == [], f"settings missing in the README: {undocumented}"
+
+
+def test_no_setting_is_documented_twice_in_the_readme() -> None:
+    """A setting that the table documents twice is a mistake."""
+    duplicates = _readme_duplicates(README.read_text(encoding="utf-8"))
+
+    assert duplicates == [], f"settings documented more than once in the README: {duplicates}"
+
+
+@pytest.mark.parametrize(
+    ("row", "mismatches"),
+    [
+        ("| `AIRLLM_OLLAMA_PORT` | `11434` | Server port |", ["port is documented as '11434'"]),
+        ("| `AIRLLM_OLLAMA_PORT` | `8000` | Server port |", []),
+        (
+            "| `AIRLLM_OLLAMA_MAX_SEQ_LEN` | `1024` | Context |",
+            ["max_seq_len is documented as '1024'"],
+        ),
+        ("| `AIRLLM_OLLAMA_MODEL_PATH` | _(empty)_ | Path |", []),
+        ("| `AIRLLM_OLLAMA_KEEP_ALIVE` | `5m` | Lifetime |", ["keep_alive is documented as '5m'"]),
+    ],
+)
+def test_the_readme_checks_catch_a_drift(row: str, mismatches: list[str]) -> None:
+    """The guard has to fail when the settings table drifts away."""
+    assert _readme_mismatches(row) == mismatches
+
+
+def test_the_readme_checks_report_an_empty_default() -> None:
+    """An empty default is written as `_(empty)_` in the README."""
+    text = "| `AIRLLM_OLLAMA_MODEL_PATH` | _(empty)_ | Path |"
+
+    assert _readme_values(text) == {"model_path": ""}
+
+
+def test_the_readme_checks_report_a_duplicate_setting() -> None:
+    """A variable that the table documents twice has to be reported."""
+    text = (
+        "| `AIRLLM_OLLAMA_PORT` | `8000` | Server port |\n"
+        "| `AIRLLM_OLLAMA_PORT` | `9000` | Server port |\n"
+    )
+
+    assert _readme_duplicates(text) == ["airllm_ollama_port"]
+
+
+def test_the_readme_checks_ignore_other_tables() -> None:
+    """Only the settings table is read, not the tables of the API."""
+    text = "| Method | Path | Description |\n| --- | --- | --- |\n| `GET` | `/` | The root |"
+
+    assert _readme_values(text) == {}
