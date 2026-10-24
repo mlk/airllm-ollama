@@ -553,6 +553,7 @@ def test_a_prompt_without_a_system_message_is_tokenized_with_the_special_tokens(
 
 
 def test_a_templated_chat_is_tokenized_without_the_special_tokens() -> None:
+    """The chat of a model with a template is tokenized without the special tokens."""
     model = FakeModel()
     model.tokenizer = BosTokenizer()
     model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
@@ -572,11 +573,13 @@ def test_the_transcript_fallback_is_tokenized_with_the_special_tokens() -> None:
 
     engine.generate_chat([("user", "Hello")])
 
+    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
 
 def test_a_templated_stream_is_tokenized_without_the_special_tokens() -> None:
+    """The streaming path tokenizes the prompt the same way."""
     model = FakeModel()
     model.tokenizer = BosTokenizer()
     model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"

@@ -319,6 +319,10 @@ User: Why is the sky blue?
 Assistant:
 ```
 
+`prompt_eval_count` counts the tokens of the rendered prompt. Since the prompt
+is not tokenized twice, that count is one **lower** than it was before the
+double BOS token was removed — the number is the correct one now.
+
 `options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
 
 ### Verifying a running instance

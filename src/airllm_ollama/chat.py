@@ -73,6 +73,10 @@ def render_completion(tokenizer: object, prompt: str, system: str | None) -> Ren
         The rendered prompt and how it has to be tokenized.
     """
     if not system:
+        # No template rendered the prompt, so the tokenizer adds the special
+        # tokens. A `raw: true` request ends up here as well — a client that
+        # rendered the template itself sends the BOS token with the prompt
+        # (#31, #44).
         return RenderedPrompt(prompt, add_special_tokens=True)
     return render_chat(tokenizer, [("system", system), ("user", prompt)])
 
