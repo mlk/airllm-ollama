@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from importlib.metadata import version as distribution_version
 
 import pytest
@@ -48,7 +49,9 @@ def test_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AIRLLM_OLLAMA_HOST", "0.0.0.0")
     monkeypatch.setenv("AIRLLM_OLLAMA_PORT", "9999")
 
-    main()
+    # The arguments are passed explicitly: without them the entry point would
+    # parse the arguments of the pytest process.
+    main([])
 
     assert calls == [
         {
@@ -57,3 +60,12 @@ def test_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
             "log_level": "info",
         }
     ]
+
+
+def test_entrypoint_parses_the_arguments_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(sys, "argv", ["pytest", "--not-an-option"])
+
+    assert main([]) == 0
+    assert len(calls) == 1

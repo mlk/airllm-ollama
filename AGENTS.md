@@ -61,7 +61,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | Format | `uv run ruff format .` |
 | Lint | `uv run ruff check .` |
 | Type check | `uv run mypy .` |
-| Tests (with coverage gate) | `uv run pytest` |
+| Tests (with coverage gate) | `uv run pytest -q` |
 
 Never edit `uv.lock` by hand. Always commit `pyproject.toml` **and** `uv.lock`
 together.
@@ -74,10 +74,14 @@ together.
 * **mypy** — `strict = true`, `python_version = "3.11"`. No `Any` leaks, no missing
   annotations, no untyped decorators.
 * **pytest** — coverage is configured once in `pyproject.toml`: `--cov=airllm_ollama
-  --cov-branch` plus `fail_under = 80` under `[tool.coverage.report]`. Run plain
-  `uv run pytest` everywhere (CI included) — never re-declare coverage flags on
-  the command line, they would override the single source of truth. The 80 %
-  coverage gate is enforced locally *and* in CI; keep new code covered by tests.
+  --cov-branch` plus `fail_under = 80` under `[tool.coverage.report]`. Run
+  `uv run pytest -q` everywhere (CI included) — never re-declare coverage flags on
+  the command line, they would override the single source of truth. The `-q` is
+  part of the command: the entry point of the package parses `sys.argv` when it
+  is called without arguments, so a test that does that would parse the
+  arguments of the *pytest* process and fail as soon as pytest is started with
+  an argument. The 80 % coverage gate is enforced locally *and* in CI; keep new
+  code covered by tests.
 * `filterwarnings = ["error"]` — any warning (including deprecations from
   dependencies) fails the suite. Fix the cause instead of suppressing it.
 
@@ -290,6 +294,10 @@ The maintainer is on a **metered connection** — never download large artifacts
 * Use `pytest-mock`'s `mocker` fixture for patching third-party calls (e.g. AirLLM)
   so the suite stays fast and offline.
 * Shared fixtures live in `tests/conftest.py` (`app`, `client`, `settings`).
+* A test that calls the entry point of the package has to pass the arguments
+  explicitly — `main([])`, never `main()`. Without arguments the entry point
+  parses `sys.argv`, which inside the suite are the arguments of the *pytest*
+  process.
 * A new setting has to be documented in `.env.example` — `tests/test_env_example.py`
   fails otherwise. A commented out line that shows a value other than the default
   ends with `# alternative`, so the guard can tell it apart from a default.
