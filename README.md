@@ -158,6 +158,9 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 | `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
 
+A `.env` file overrides every one of these values. If yours still sets a
+variable that has a new default, remove the line to pick the default up again.
+
 ### API
 
 The `/api/*` routes mirror Ollama's REST interface, so standard Ollama clients
