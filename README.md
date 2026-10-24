@@ -4,7 +4,7 @@
 
 The **AirLLM Ollama API Wrapper** is a lightweight, high-precision proxy service that exposes a standard [Ollama REST API](https://github.com/ollama/ollama) interface powered by **[AirLLM](https://github.com/lyzhang1999/AirLLM)** execution under the hood. 
 
-In microservice architectures or multi-agent AI pipelines, downstream applications often need to dynamically choose between **speed** (low latency, lower accuracy) and **capability/accuracy** (high parameter count, exact reasoning) on a per-request basis. By providing a transparent API surface compatible with standard Ollama client SDKs, this wrapper allows client applications to switch backends effortlessly—simply by toggling the target URL between a standard Ollama instance and this AirLLM wrapper—without changing any business logic or serialization code.
+In microservice architectures or multi-agent AI pipelines, downstream applications often need to dynamically choose between **speed** (low latency, lower accuracy) and **capability/accuracy** (high parameter count, exact reasoning) on a per-request basis. By providing a transparent API surface compatible with standard Ollama client SDKs, this wrapper allows client applications to switch backends effortlessly—simply by toggling the target URL between a standard Ollama instance and this AirLLM wrapper—without changing any business logic or serialization code. The model name in the request has to be the one the target backend serves; `GET /api/tags` reports it.
 
 ---
 
@@ -22,16 +22,31 @@ In microservice architectures or multi-agent AI pipelines, downstream applicatio
 
 ```mermaid
 flowchart TD
-    client["Client Application"]
-    router{"Inference Router / Proxy"}
+    subgraph app["Client Application<br/>(the routing lives here)"]
+        router{"Chooses the backend<br/>per request"}
+    end
 
-    client --> router
-    router -->|"High Speed / Draft"| ollama["Standard Ollama API"]
-    router -->|"High Accuracy / Complex"| wrapper["AirLLM Wrapper"]
-    wrapper --> engine["AirLLM Model Engine"]
+    subgraph repo["airllm-ollama (this repository)"]
+        api["Ollama-compatible API<br/>/api/tags · /api/generate · /api/chat"]
+        engine["AirLLM Engine<br/>layer-wise inference"]
+        api --> engine
+    end
+
+    subgraph external["External service"]
+        ollama["Standard Ollama API"]
+    end
+
+    router -->|"High Speed / Draft"| ollama
+    router -->|"High Accuracy / Complex"| api
 ```
 
-When speed is prioritized, requests are routed to standard Ollama nodes. When deep accuracy or large-context reasoning is required, requests are routed seamlessly to this AirLLM wrapper.
+**The routing is not part of this service.** The client application decides per
+request whether a prompt needs the speed of a standard Ollama node or the
+accuracy of a large model served by AirLLM. This repository provides the
+"High Accuracy / Complex" branch of that decision — an Ollama-compatible API in
+front of an AirLLM engine. Switching backends is a matter of the base URL and
+of the model name the backend serves: this service serves exactly one model
+and answers a request for another one with a `404`.
 
 ---
 
