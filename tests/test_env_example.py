@@ -29,8 +29,12 @@ UNDOCUMENTED = {"version"}
 
 # Assignments, active or commented out. Spaces around the = are allowed, like
 # dotenv allows them.
-ACTIVE_SETTING = re.compile(r"^(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z0-9_]+)\s*=")
-COMMENTED_SETTING = re.compile(r"^#\s*(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z0-9_]+)\s*=")
+ACTIVE_SETTING = re.compile(
+    r"^(?:export\s+)?(?P<key>airllm_ollama_[A-Za-z0-9_]+)\s*=", re.IGNORECASE
+)
+COMMENTED_SETTING = re.compile(
+    r"^#\s*(?:export\s+)?(?P<key>airllm_ollama_[A-Za-z0-9_]+)\s*=", re.IGNORECASE
+)
 
 
 def _defaults() -> dict[str, object]:
@@ -47,7 +51,9 @@ def _parse(name: str, value: str) -> object:
     The value goes through the real settings class, so the validators and the
     decoding of the settings apply.
     """
-    kwargs: dict[str, Any] = {"_env_file": None, name: value}
+    # Every other setting is pinned to its default, so that the environment of
+    # the machine cannot influence the parsing.
+    kwargs: dict[str, Any] = {"_env_file": None, **_defaults(), name: value}
     return getattr(Settings(**kwargs), name)
 
 
@@ -130,10 +136,12 @@ def _stale_commented_values(text: str) -> list[str]:
     for line in text.splitlines():
         stripped = line.strip()
         match = COMMENTED_SETTING.match(stripped)
-        if match is None or ALTERNATIVE in stripped:
+        if match is None or stripped.endswith(ALTERNATIVE):
             continue
         name = _name(match.group("key"))
-        value = _commented_values(line)[name]
+        value = _commented_values(line).get(name)
+        if value is None:
+            continue
         field = Settings.model_fields.get(name)
         if field is None:
             continue
@@ -194,15 +202,19 @@ def test_every_setting_is_documented_in_the_example() -> None:
     assert undocumented == [], f"settings missing in .env.example: {undocumented}"
 
 
-def test_no_setting_is_set_twice() -> None:
-    """A setting that is set twice in the example file is a mistake."""
-    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+def _duplicates(text: str) -> list[str]:
+    """Return the settings that are set more than once."""
     keys = [
-        match.group("key")
+        match.group("key").lower()
         for match in (ACTIVE_SETTING.match(line.strip()) for line in text.splitlines())
         if match is not None
     ]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    return sorted({key for key in keys if keys.count(key) > 1})
+
+
+def test_no_setting_is_set_twice() -> None:
+    """A setting that is set twice in the example file is a mistake."""
+    duplicates = _duplicates(ENV_EXAMPLE.read_text(encoding="utf-8"))
 
     assert duplicates == [], f"settings set more than once in .env.example: {duplicates}"
 
@@ -239,6 +251,20 @@ def test_the_checks_report_a_missing_setting() -> None:
     text = "AIRLLM_OLLAMA_HOST=127.0.0.1\n"
 
     assert "port" in set(_defaults()) - _documented_keys(text) - UNDOCUMENTED
+
+
+def test_the_checks_catch_a_duplicate_setting() -> None:
+    """A setting that is set twice has to be reported, whatever its case is."""
+    text = "AIRLLM_OLLAMA_PORT=8000\nairllm_ollama_port=9000\n"
+
+    assert _duplicates(text) == ["airllm_ollama_port"]
+
+
+def test_an_alternative_is_exempt_from_the_default_check() -> None:
+    """A line that is marked as an alternative may show another value."""
+    text = "# AIRLLM_OLLAMA_KEEP_ALIVE=5m  # alternative\n"
+
+    assert _stale_commented_values(text) == []
 
 
 def test_the_checks_report_a_stale_documented_default() -> None:
