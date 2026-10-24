@@ -31,7 +31,14 @@ from airllm_ollama.engine import (
     reset_engine,
 )
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
-from fakes import TOKEN_IDS, BosTokenizer, FakeModel, FakeTokenizer, RecordingFactory
+from fakes import (
+    TOKEN_IDS,
+    BosTokenizer,
+    FakeModel,
+    FakeTokenizer,
+    RecordingFactory,
+    SystemRoleTokenizer,
+)
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 BOS = BosTokenizer.BOS
@@ -541,6 +548,19 @@ def test_a_raw_prompt_is_sent_unchanged() -> None:
 
     assert model.tokenizer.prompts == ["hello"]
     assert model.tokenizer.renderings == []
+
+
+def test_a_template_that_refuses_the_system_role_keeps_the_model_format() -> None:
+    """The system message is merged into the first user turn."""
+    model = FakeModel()
+    model.tokenizer = SystemRoleTokenizer()
+    model.tokenizer.template = "<|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("system", "Be terse."), ("user", "Hello")])
+
+    assert model.tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nHello"}]]
+    assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
 
 
 def test_without_a_system_message_and_a_template_the_prompt_is_unchanged() -> None:

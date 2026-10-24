@@ -9,8 +9,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol, cast
 
 ChatTurn = tuple[str, str]
+
+# The system message is merged into the first user turn with this separator —
+# the same one the plain join of a model without a template uses.
+SEPARATOR = "\n\n"
+
+
+class ChatTemplate(Protocol):
+    """The chat template of a tokenizer."""
+
+    def __call__(self, messages: object, **kwargs: object) -> str:
+        """Render the messages with the template."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,11 @@ def render_transcript(messages: Sequence[ChatTurn]) -> str:
 def apply_chat_template(tokenizer: object, messages: Sequence[ChatTurn]) -> str | None:
     """Render the messages with the chat template of the model.
 
+    A template that refuses the messages is asked a second time, with the
+    system message merged into the first user turn. Templates without support
+    for the system role (Gemma, older Mistral versions) raise, and the model
+    would lose its own format completely — the merged messages keep it.
+
     Args:
         tokenizer: The tokenizer of the model.
         messages: The chat history as ``(role, content)`` pairs.
@@ -71,6 +89,27 @@ def apply_chat_template(tokenizer: object, messages: Sequence[ChatTurn]) -> str 
     template = getattr(tokenizer, "apply_chat_template", None)
     if template is None:
         return None
+    render = cast("ChatTemplate", template)
+    rendered = _render_with_template(render, messages)
+    if rendered is not None:
+        return rendered
+    merged = _merge_system_message(messages)
+    if merged is None:
+        return None
+    return _render_with_template(render, merged)
+
+
+def _render_with_template(template: ChatTemplate, messages: Sequence[ChatTurn]) -> str | None:
+    """Render the messages with the template.
+
+    Args:
+        template: The chat template of the model.
+        messages: The chat history as ``(role, content)`` pairs.
+
+    Returns:
+        The rendered prompt, or ``None`` when the template refuses the
+        messages.
+    """
     payload = [{"role": role, "content": content} for role, content in messages]
     try:
         rendered = template(payload, tokenize=False, add_generation_prompt=True)
@@ -81,6 +120,36 @@ def apply_chat_template(tokenizer: object, messages: Sequence[ChatTurn]) -> str 
     if not isinstance(rendered, str) or not rendered.strip():
         return None
     return rendered
+
+
+def _merge_system_message(messages: Sequence[ChatTurn]) -> list[ChatTurn] | None:
+    """Merge the system message into the first user turn.
+
+    A template without support for the system role refuses the messages. The
+    system message becomes part of the first user turn instead, so that the
+    model still gets its own format.
+
+    Args:
+        messages: The chat history as ``(role, content)`` pairs.
+
+    Returns:
+        The messages with the system message merged, or ``None`` when there is
+        no system message or no user turn to merge it into.
+    """
+    if len(messages) < 2 or messages[0][0] != "system":
+        return None
+    system = messages[0][1]
+    merged: list[ChatTurn] = []
+    merged_system = False
+    for role, content in messages[1:]:
+        if role == "user" and not merged_system:
+            merged.append(("user", f"{system}{SEPARATOR}{content}"))
+            merged_system = True
+            continue
+        merged.append((role, content))
+    if not merged_system:
+        return None
+    return merged
 
 
 def render_chat(tokenizer: object, messages: Sequence[ChatTurn]) -> RenderedPrompt:
@@ -139,6 +208,6 @@ def render_completion(
         # No template: the system message is joined with the prompt, the way
         # Ollama does it for a model without a template.
         if system:
-            return RenderedPrompt(f"{system}\n\n{prompt}", add_special_tokens=True)
+            return RenderedPrompt(f"{system}{SEPARATOR}{prompt}", add_special_tokens=True)
         return RenderedPrompt(prompt, add_special_tokens=True)
     return RenderedPrompt(rendered, add_special_tokens=False)

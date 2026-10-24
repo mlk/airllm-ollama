@@ -325,6 +325,11 @@ User: Why is the sky blue?
 Assistant:
 ```
 
+A template without support for the `system` role (Gemma, older Mistral
+versions) refuses the history. It is then asked a second time, with the system
+message merged into the first user turn (`"You are terse.\n\nWhy is the sky
+blue?"`) — the model keeps its own format instead of getting a transcript.
+
 `prompt_eval_count` counts the tokens of the rendered prompt. Since the prompt
 is not tokenized twice, that count is one **lower** than it was before the
 double BOS token was removed — the number is the correct one now.

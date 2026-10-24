@@ -93,6 +93,23 @@ class BosTokenizer(FakeTokenizer):
         return ids
 
 
+class SystemRoleTokenizer(FakeTokenizer):
+    """Tokenizer double whose template refuses the system role.
+
+    Templates without support for the system role (Gemma, older Mistral
+    versions) raise — the rendering has to ask again with the system message
+    merged into the first user turn.
+    """
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+        """Refuse the messages when they carry a system message."""
+        if isinstance(messages, list) and any(
+            isinstance(message, dict) and message.get("role") == "system" for message in messages
+        ):
+            raise ValueError("this template does not support the system role")
+        return super().apply_chat_template(messages, **kwargs)
+
+
 class FakeModel:
     """AirLLM model double recording how it was called."""
 
