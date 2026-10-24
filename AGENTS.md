@@ -29,8 +29,10 @@ milestones (epics):
 4. CI must be green before the PR is considered done (`gh pr checks <pr>
    --watch`).
 5. Do not reformat or restructure unrelated code — keep diffs focused on the ticket.
-6. **Deal with every review comment.** Read the comments of the pull request
-   (`gh pr view <pr> --json comments`) and answer every one of them:
+6. **Answer the automated review.** Every PR gets a `review` job (JetBrains
+   Junie, see `.junie/guidelines.md`). After opening the PR, wait for it to
+   finish (`gh pr checks <pr> --watch`), read the comment
+   (`gh pr view <pr> --json comments`) and deal with **every** suggestion:
 
    * implement the suggestion (commit on the same branch, push again),
    * ignore it — then say why in a reply to the comment,
@@ -38,8 +40,9 @@ milestones (epics):
      (`gh issue create`) or extend an existing one and reference that issue in
      the reply.
 
-   A PR is not done before its comments are answered. Do not leave a
-   suggestion unaddressed and unmentioned.
+   A PR is not done before the reviewer has been answered. Do not leave a
+   suggestion unaddressed and unmentioned. The job posts **one** comment per
+   pull request and updates it on the next run.
 
 ## Tooling
 
@@ -98,6 +101,10 @@ together.
   `TYPE_CHECKING` guard, and tests must mock the engine.
 * `src/airllm_ollama/config.py` uses `get_settings()` with an `lru_cache`. Tests that
   change environment variables must call `get_settings.cache_clear()` afterwards.
+* The `review` job (JetBrains Junie) uses the **free** model of the account — the
+  workflow pins no `model`. When the job fails with *"Insufficient account
+  balance"*, the account is out of credits; the quality gates still decide, the
+  review is a second pair of eyes.
 
 ## Architecture
 
