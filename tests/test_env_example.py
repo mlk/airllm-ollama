@@ -8,6 +8,7 @@ import re
 
 from dotenv import dotenv_values
 from pydantic import TypeAdapter
+from pydantic.fields import FieldInfo
 
 from airllm_ollama.config import Settings
 
@@ -17,13 +18,28 @@ ENV_EXAMPLE = pathlib.Path(__file__).parent.parent / ".env.example"
 # every release, so it is not part of the example file.
 UNDOCUMENTED = {"version"}
 
-ACTIVE_SETTING = re.compile(r"^(?P<key>AIRLLM_OLLAMA_[A-Z_]+)=")
-COMMENTED_SETTING = re.compile(r"^#\s*(?P<key>AIRLLM_OLLAMA_[A-Z_]+)=")
+ACTIVE_SETTING = re.compile(r"^(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z_]+)=")
+COMMENTED_SETTING = re.compile(r"^#\s*(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z_]+)=")
 
 
 def _defaults() -> dict[str, object]:
     """Return the default of every setting."""
-    return {name: field.default for name, field in Settings.model_fields.items()}
+    return {
+        name: field.get_default(call_default_factory=True)
+        for name, field in Settings.model_fields.items()
+    }
+
+
+def _field(name: str) -> FieldInfo:
+    """Return the field of a setting."""
+    return Settings.model_fields[name]
+
+
+def _parse(field: FieldInfo, value: str) -> object:
+    """Parse a value of the example file with the type of the setting."""
+    annotation = field.annotation
+    assert annotation is not None
+    return TypeAdapter(annotation).validate_python(value)
 
 
 def _active_values(text: str) -> dict[str, str]:
@@ -34,30 +50,61 @@ def _active_values(text: str) -> dict[str, str]:
     }
 
 
-def _documented_keys(text: str) -> set[str]:
-    """Return every setting the given text mentions, active or commented out."""
-    keys = set(_active_values(text))
+def _commented_values(text: str) -> dict[str, str]:
+    """Return the settings the given text mentions as a commented out line."""
+    values: dict[str, str] = {}
     for line in text.splitlines():
         match = COMMENTED_SETTING.match(line.strip())
-        if match is not None:
-            keys.add(match.group("key").removeprefix("AIRLLM_OLLAMA_").lower())
-    return keys
+        if match is None:
+            continue
+        key = match.group("key").removeprefix("AIRLLM_OLLAMA_").lower()
+        values[key] = line.strip().split("=", 1)[1].strip()
+    return values
+
+
+def _documented_keys(text: str) -> set[str]:
+    """Return every setting the given text mentions, active or commented out."""
+    return set(_active_values(text)) | set(_commented_values(text))
+
+
+def _mismatches(text: str) -> list[str]:
+    """Return the active values that differ from the default of the setting."""
+    mismatches: list[str] = []
+    for name, value in _active_values(text).items():
+        if name not in Settings.model_fields:
+            mismatches.append(f"'{name}' is not a setting of the service")
+            continue
+        field = _field(name)
+        if _parse(field, value) != field.get_default(call_default_factory=True):
+            mismatches.append(f"{name} is set to '{value}'")
+    return mismatches
+
+
+def _invalid_values(text: str) -> list[str]:
+    """Return the values of the example file that do not fit their setting."""
+    invalid: list[str] = []
+    for name, value in {**_commented_values(text), **_active_values(text)}.items():
+        if name not in Settings.model_fields:
+            continue
+        try:
+            _parse(_field(name), value)
+        except ValueError:
+            invalid.append(f"{name} is set to '{value}'")
+    return invalid
 
 
 def test_every_value_of_the_example_matches_the_default() -> None:
     """The example file must not drift away from the defaults."""
-    text = ENV_EXAMPLE.read_text(encoding="utf-8")
-    fields = Settings.model_fields
+    mismatches = _mismatches(ENV_EXAMPLE.read_text(encoding="utf-8"))
 
-    for name, value in _active_values(text).items():
-        assert name in fields, f"'{name}' is not a setting of the service"
-        field = fields[name]
-        annotation = field.annotation
-        assert annotation is not None
-        parsed = TypeAdapter(annotation).validate_python(value)
-        assert parsed == field.default, (
-            f".env.example sets {name} to '{value}', the default is '{field.default}'"
-        )
+    assert mismatches == []
+
+
+def test_every_value_of_the_example_fits_its_setting() -> None:
+    """A typo in a value has to be caught as well."""
+    invalid = _invalid_values(ENV_EXAMPLE.read_text(encoding="utf-8"))
+
+    assert invalid == []
 
 
 def test_every_key_of_the_example_names_a_setting() -> None:
@@ -100,3 +147,11 @@ def test_a_commented_alternative_does_not_hide_the_active_value() -> None:
     )
 
     assert _active_values(text) == {"model_name": "the-default"}
+
+
+def test_the_checks_catch_a_drift() -> None:
+    """The guard has to fail when the example file drifts away."""
+    text = "AIRLLM_OLLAMA_PORT=11434\n"
+
+    assert _mismatches(text) == ["port is set to '11434'"]
+    assert _invalid_values(text) == []
