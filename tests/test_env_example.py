@@ -5,16 +5,21 @@ from __future__ import annotations
 import io
 import pathlib
 import re
+from typing import Any
 
+import pytest
 from dotenv import dotenv_values
-from pydantic import TypeAdapter, ValidationError
-from pydantic.fields import FieldInfo
+from pydantic import ValidationError
 
 from airllm_ollama.config import Settings
 
 ENV_EXAMPLE = pathlib.Path(__file__).parent.parent / ".env.example"
 
 PREFIX = "AIRLLM_OLLAMA_"
+
+# A commented out line that shows a value other than the default has to be
+# marked as an alternative, so that the guard can tell the two apart.
+ALTERNATIVE = "# alternative"
 
 # The version comes from the package metadata and would have to be updated on
 # every release, so it is not part of the example file.
@@ -34,16 +39,19 @@ def _defaults() -> dict[str, object]:
     }
 
 
-def _parse(field: FieldInfo, value: str) -> object:
-    """Parse a value of the example file with the type of the setting."""
-    annotation = field.annotation
-    assert annotation is not None
-    return TypeAdapter(annotation).validate_python(value)
+def _parse(name: str, value: str) -> object:
+    """Build the setting from a value of the example file.
+
+    The value goes through the real settings class, so the validators and the
+    decoding of the settings apply.
+    """
+    kwargs: dict[str, Any] = {"_env_file": None, name: value}
+    return getattr(Settings(**kwargs), name)
 
 
 def _active_values(text: str) -> dict[str, str]:
     """Return the settings the given text sets explicitly."""
-    values = dotenv_values(stream=io.StringIO(text))
+    values = dotenv_values(stream=io.StringIO(text), interpolate=False)
     return {
         key.removeprefix(PREFIX).lower(): value or ""
         for key, value in values.items()
@@ -58,7 +66,8 @@ def _commented_values(text: str) -> dict[str, str]:
         stripped = line.strip()
         if COMMENTED_SETTING.match(stripped) is None:
             continue
-        for key, value in dotenv_values(stream=io.StringIO(stripped.lstrip("#"))).items():
+        parsed = dotenv_values(stream=io.StringIO(stripped.lstrip("#")), interpolate=False)
+        for key, value in parsed.items():
             if key.startswith(PREFIX):
                 values[key.removeprefix(PREFIX).lower()] = value or ""
     return values
@@ -78,7 +87,7 @@ def _mismatches(text: str) -> list[str]:
             mismatches.append(f"'{name}' is not a setting of the service")
             continue
         try:
-            parsed = _parse(field, value)
+            parsed = _parse(name, value)
         except ValidationError:
             # A value that does not fit its setting is reported separately.
             continue
@@ -90,15 +99,36 @@ def _mismatches(text: str) -> list[str]:
 def _invalid_values(text: str) -> list[str]:
     """Return the values of the example file that do not fit their setting."""
     invalid: list[str] = []
-    for name, value in {**_commented_values(text), **_active_values(text)}.items():
+    for values in (_active_values(text), _commented_values(text)):
+        for name, value in values.items():
+            if name not in Settings.model_fields:
+                continue
+            try:
+                _parse(name, value)
+            except ValidationError:
+                invalid.append(f"{name} is set to '{value}'")
+    return invalid
+
+
+def _stale_commented_values(text: str) -> list[str]:
+    """Return the commented values that show a default that is not the default."""
+    stale: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if COMMENTED_SETTING.match(stripped) is None or ALTERNATIVE in stripped:
+            continue
+        name = stripped.split("=", 1)[0].lstrip("# ").removeprefix(PREFIX).lower()
+        value = _commented_values(line)[name]
         field = Settings.model_fields.get(name)
         if field is None:
             continue
         try:
-            _parse(field, value)
+            parsed = _parse(name, value)
         except ValidationError:
-            invalid.append(f"{name} is set to '{value}'")
-    return invalid
+            continue
+        if parsed != field.get_default(call_default_factory=True):
+            stale.append(f"{name} is documented as '{value}'")
+    return stale
 
 
 def test_the_allow_list_of_undocumented_settings_is_valid() -> None:
@@ -113,6 +143,13 @@ def test_every_value_of_the_example_matches_the_default() -> None:
     mismatches = _mismatches(ENV_EXAMPLE.read_text(encoding="utf-8"))
 
     assert mismatches == [], f".env.example does not match the defaults: {mismatches}"
+
+
+def test_every_documented_value_matches_the_default() -> None:
+    """A commented out line that shows the default has to show the real one."""
+    stale = _stale_commented_values(ENV_EXAMPLE.read_text(encoding="utf-8"))
+
+    assert stale == [], f".env.example documents outdated defaults: {stale}"
 
 
 def test_every_value_of_the_example_fits_its_setting() -> None:
@@ -164,23 +201,30 @@ def test_a_commented_alternative_does_not_hide_the_active_value() -> None:
     assert _active_values(text) == {"model_name": "the-default"}
 
 
-def test_the_checks_catch_a_drift() -> None:
+@pytest.mark.parametrize(
+    ("text", "mismatches", "invalid"),
+    [
+        ("AIRLLM_OLLAMA_PORT=11434\n", ["port is set to '11434'"], []),
+        ("AIRLLM_OLLAMA_PORT=80OO\n", [], ["port is set to '80OO'"]),
+        ("AIRLLM_OLLAMA_PORTS=8000\n", ["'ports' is not a setting of the service"], []),
+        ("# AIRLLM_OLLAMA_PORT=11434\n", [], []),
+    ],
+)
+def test_the_checks_catch_a_drift(text: str, mismatches: list[str], invalid: list[str]) -> None:
     """The guard has to fail when the example file drifts away."""
-    stale = "AIRLLM_OLLAMA_PORT=11434\n"
-    assert _mismatches(stale) == ["port is set to '11434'"]
-    assert _invalid_values(stale) == []
+    assert _mismatches(text) == mismatches
+    assert _invalid_values(text) == invalid
 
-    invalid = "AIRLLM_OLLAMA_PORT=80OO\n"
-    assert _invalid_values(invalid) == ["port is set to '80OO'"]
-    assert _mismatches(invalid) == []
 
-    unknown = "AIRLLM_OLLAMA_PORTS=8000\n"
-    assert _mismatches(unknown) == ["'ports' is not a setting of the service"]
+def test_the_checks_report_a_missing_setting() -> None:
+    """A setting that is not documented at all has to be reported."""
+    text = "AIRLLM_OLLAMA_HOST=127.0.0.1\n"
 
-    missing = "AIRLLM_OLLAMA_HOST=127.0.0.1\n"
-    assert "port" in set(_defaults()) - _documented_keys(missing) - UNDOCUMENTED
+    assert "port" in set(_defaults()) - _documented_keys(text) - UNDOCUMENTED
 
-    commented = "# AIRLLM_OLLAMA_PORT=11434\n"
-    assert _mismatches(commented) == []
-    assert _invalid_values(commented) == []
-    assert "port" in _documented_keys(commented)
+
+def test_the_checks_report_a_stale_documented_default() -> None:
+    """A commented out default that is not the default has to be reported."""
+    text = "# AIRLLM_OLLAMA_STREAM_FORMAT=sse\n"
+
+    assert _stale_commented_values(text) == ["stream_format is documented as 'sse'"]
