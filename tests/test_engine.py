@@ -15,6 +15,7 @@ from types import ModuleType
 import pytest
 from pytest_mock import MockerFixture
 
+from airllm_ollama.chat import render_transcript
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
@@ -573,7 +574,7 @@ def test_the_transcript_fallback_is_tokenized_with_the_special_tokens() -> None:
 
     engine.generate_chat([("user", "Hello")])
 
-    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+    assert model.tokenizer.prompts == [render_transcript([("user", "Hello")])]
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
