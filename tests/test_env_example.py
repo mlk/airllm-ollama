@@ -15,7 +15,9 @@ from airllm_ollama.config import Settings
 
 ENV_EXAMPLE = pathlib.Path(__file__).parent.parent / ".env.example"
 
-PREFIX = "AIRLLM_OLLAMA_"
+# pydantic-settings reads the environment regardless of the case, so the guard
+# has to do the same.
+PREFIX = "airllm_ollama_"
 
 # A commented out line that shows a value other than the default has to be
 # marked as an alternative, so that the guard can tell the two apart.
@@ -49,28 +51,40 @@ def _parse(name: str, value: str) -> object:
     return getattr(Settings(**kwargs), name)
 
 
+def _name(key: str) -> str:
+    """Return the name of the setting an environment variable belongs to."""
+    return key.lower().removeprefix(PREFIX)
+
+
 def _active_values(text: str) -> dict[str, str]:
     """Return the settings the given text sets explicitly."""
     values = dotenv_values(stream=io.StringIO(text), interpolate=False)
     return {
-        key.removeprefix(PREFIX).lower(): value or ""
-        for key, value in values.items()
-        if key.startswith(PREFIX)
+        _name(key): value or "" for key, value in values.items() if key.lower().startswith(PREFIX)
     }
 
 
-def _commented_values(text: str) -> dict[str, str]:
-    """Return the settings the given text mentions as a commented out line."""
-    values: dict[str, str] = {}
+def _commented_entries(text: str) -> list[tuple[str, str]]:
+    """Return the settings the given text mentions as a commented out line.
+
+    A setting can be mentioned more than once, with several alternatives, so
+    every entry is returned.
+    """
+    entries: list[tuple[str, str]] = []
     for line in text.splitlines():
         stripped = line.strip()
         if COMMENTED_SETTING.match(stripped) is None:
             continue
         parsed = dotenv_values(stream=io.StringIO(stripped.lstrip("#")), interpolate=False)
         for key, value in parsed.items():
-            if key.startswith(PREFIX):
-                values[key.removeprefix(PREFIX).lower()] = value or ""
-    return values
+            if key.lower().startswith(PREFIX):
+                entries.append((_name(key), value or ""))
+    return entries
+
+
+def _commented_values(text: str) -> dict[str, str]:
+    """Return the commented values, the last one of a setting wins."""
+    return dict(_commented_entries(text))
 
 
 def _documented_keys(text: str) -> set[str]:
@@ -99,14 +113,14 @@ def _mismatches(text: str) -> list[str]:
 def _invalid_values(text: str) -> list[str]:
     """Return the values of the example file that do not fit their setting."""
     invalid: list[str] = []
-    for values in (_active_values(text), _commented_values(text)):
-        for name, value in values.items():
-            if name not in Settings.model_fields:
-                continue
-            try:
-                _parse(name, value)
-            except ValidationError:
-                invalid.append(f"{name} is set to '{value}'")
+    entries = list(_active_values(text).items()) + _commented_entries(text)
+    for name, value in entries:
+        if name not in Settings.model_fields:
+            continue
+        try:
+            _parse(name, value)
+        except ValidationError:
+            invalid.append(f"{name} is set to '{value}'")
     return invalid
 
 
@@ -115,9 +129,10 @@ def _stale_commented_values(text: str) -> list[str]:
     stale: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if COMMENTED_SETTING.match(stripped) is None or ALTERNATIVE in stripped:
+        match = COMMENTED_SETTING.match(stripped)
+        if match is None or ALTERNATIVE in stripped:
             continue
-        name = stripped.split("=", 1)[0].lstrip("# ").removeprefix(PREFIX).lower()
+        name = _name(match.group("key"))
         value = _commented_values(line)[name]
         field = Settings.model_fields.get(name)
         if field is None:
@@ -149,7 +164,10 @@ def test_every_documented_value_matches_the_default() -> None:
     """A commented out line that shows the default has to show the real one."""
     stale = _stale_commented_values(ENV_EXAMPLE.read_text(encoding="utf-8"))
 
-    assert stale == [], f".env.example documents outdated defaults: {stale}"
+    assert stale == [], (
+        f".env.example documents outdated defaults: {stale}. A commented out line that "
+        f"shows a value other than the default has to end with '{ALTERNATIVE}'."
+    )
 
 
 def test_every_value_of_the_example_fits_its_setting() -> None:
