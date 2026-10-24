@@ -263,11 +263,15 @@ src/airllm_ollama/
 * `chat.render_chat()` renders the history with the chat template of the model
   (`tokenizer.apply_chat_template`); models without a template get the plain
   transcript of `chat.render_transcript()` (`User: ...\n\nAssistant:`).
-  A template that rejects the messages falls back to the transcript as well.
 * `chat.apply_chat_template()` is the primitive behind both renderings: it
   returns the rendered prompt or `None` when the model has no template or the
   template refuses the messages. `render_chat()` falls back to the transcript,
   `render_completion()` to the plain prompt.
+* A template that refuses the messages is asked a second time, with the system
+  message merged into the first user turn (`"Be terse.\n\nHello"`). Templates
+  without support for the system role (Gemma, older Mistral versions) raise,
+  and the model would lose its own format without the retry. The history after
+  the first user turn is kept.
 * The rendering lives in `chat.py` and not in the route, so it can be unit
   tested without a model.
 * `chat.render_chat()` and `chat.render_completion()` return a

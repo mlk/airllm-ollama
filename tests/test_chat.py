@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from airllm_ollama.chat import render_chat, render_completion, render_transcript
+from fakes import SystemRoleTokenizer
 
 MESSAGES = [
     ("system", "Be brief."),
@@ -106,6 +107,104 @@ def test_render_chat_falls_back_when_the_template_returns_nothing() -> None:
     assert rendered.add_special_tokens is True
 
 
+def test_a_template_that_refuses_the_system_role_gets_the_merged_messages() -> None:
+    """A template without support for the system role is asked a second time."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    rendered = render_chat(tokenizer, [("system", "Be brief."), ("user", "Hello")])
+
+    assert rendered.text == "templated"
+    assert rendered.add_special_tokens is False
+    assert tokenizer.renderings == [[{"role": "user", "content": "Be brief.\n\nHello"}]]
+
+
+def test_the_history_after_the_first_user_turn_is_kept() -> None:
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    render_chat(
+        tokenizer,
+        [
+            ("system", "Be brief."),
+            ("user", "Hello"),
+            ("assistant", "Hi!"),
+            ("user", "Again"),
+        ],
+    )
+
+    assert tokenizer.renderings == [
+        [
+            {"role": "user", "content": "Be brief.\n\nHello"},
+            {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Again"},
+        ]
+    ]
+
+
+def test_every_system_message_is_merged_into_the_first_user_turn() -> None:
+    """A system message in the middle of the history is merged as well."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    render_chat(tokenizer, [("user", "Hello"), ("system", "Be brief."), ("user", "Again")])
+
+    assert tokenizer.renderings == [
+        [
+            {"role": "user", "content": "Be brief.\n\nHello"},
+            {"role": "user", "content": "Again"},
+        ]
+    ]
+
+
+def test_an_empty_system_message_is_dropped_by_the_merge() -> None:
+    """An empty system message must not add newlines to the user turn."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    render_chat(tokenizer, [("system", "   "), ("user", "Hello")])
+
+    assert tokenizer.renderings == [[{"role": "user", "content": "Hello"}]]
+
+
+def test_a_template_that_refuses_everything_falls_back_to_the_transcript() -> None:
+    class BrokenTokenizer:
+        """Tokenizer double whose template refuses every message."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Reject the messages."""
+            raise ValueError("no template for this model")
+
+    messages = [("system", "Be brief."), ("user", "Hello")]
+
+    rendered = render_chat(BrokenTokenizer(), messages)
+
+    assert rendered.text == render_transcript(messages)
+    assert rendered.add_special_tokens is True
+
+
+def test_a_history_without_a_user_turn_is_not_asked_again() -> None:
+    """There is no user turn to merge the system message into."""
+
+    class BrokenTokenizer:
+        """Tokenizer double whose template refuses every message."""
+
+        def __init__(self) -> None:
+            """Count the calls of the template."""
+            self.calls = 0
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Reject the messages."""
+            self.calls += 1
+            raise ValueError("no template for this model")
+
+    tokenizer = BrokenTokenizer()
+
+    render_chat(tokenizer, [("system", "Be brief."), ("assistant", "Hi!")])
+
+    assert tokenizer.calls == 1
+
+
 def test_render_completion_applies_the_chat_template_without_a_system_message() -> None:
     """Ollama applies the template to every prompt."""
 
@@ -189,3 +288,15 @@ def test_render_completion_joins_the_system_message_when_the_template_fails() ->
 
     assert rendered.text == "Be terse.\n\nhello"
     assert rendered.add_special_tokens is True
+
+
+def test_render_completion_merges_the_system_message_when_the_template_refuses_it() -> None:
+    """A template without support for the system role is asked a second time."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    rendered = render_completion(tokenizer, "hello", "Be terse.")
+
+    assert rendered.text == "templated"
+    assert rendered.add_special_tokens is False
+    assert tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nhello"}]]

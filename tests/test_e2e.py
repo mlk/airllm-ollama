@@ -19,7 +19,7 @@ from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
-from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel
+from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel, SystemRoleTokenizer
 
 MODEL = "test-model"
 PROMPT = "Why is the sky blue?"
@@ -273,6 +273,50 @@ def test_api_chat_falls_back_to_the_transcript(service: TestClient, factory: Fak
 
     assert response.status_code == 200
     assert factory.model.tokenizer.prompts == [f"User: {PROMPT}\n\nAssistant:"]
+
+
+def test_api_chat_merges_the_system_message_when_the_template_refuses_it(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A template without support for the system role still gets its own format."""
+    factory.model.tokenizer = SystemRoleTokenizer()
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": PROMPT},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [
+        [{"role": "user", "content": f"Be terse.\n\n{PROMPT}"}]
+    ]
+
+
+def test_api_generate_merges_the_system_message_when_the_template_refuses_it(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A template without support for the system role still gets its own format."""
+    factory.model.tokenizer = SystemRoleTokenizer()
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
+    response = service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [
+        [{"role": "user", "content": f"Be terse.\n\n{PROMPT}"}]
+    ]
 
 
 def test_health_reflects_the_loaded_model(service: TestClient) -> None:
