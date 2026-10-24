@@ -341,11 +341,11 @@ with `1` when something is wrong — handy as a container health probe.
 
 ```bash
 # Full suite with coverage (enforces >= 80% coverage)
-uv run pytest
+uv run pytest -q
 
 # Single file / single test
-uv run pytest tests/test_api_health.py
-uv run pytest tests/test_api_health.py::test_health_returns_ok
+uv run pytest -q tests/test_api_health.py
+uv run pytest -q tests/test_api_health.py::test_health_returns_ok
 
 # HTML coverage report
 uv run coverage html && open htmlcov/index.html
@@ -360,7 +360,7 @@ uv lock --check              # lock file is up to date
 uv run ruff format --check . # formatting
 uv run ruff check .          # linting
 uv run mypy .                # static type checking (strict)
-uv run pytest                # tests + coverage gate
+uv run pytest -q             # tests + coverage gate
 ```
 
 ### Project layout

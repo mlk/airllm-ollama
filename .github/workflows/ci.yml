@@ -58,7 +58,11 @@ jobs:
         run: uv run mypy .
 
       - name: Run tests with coverage
-        run: uv run pytest
+        # The `-q` is not cosmetic: the entry point of the package parses
+        # `sys.argv` when it is called without arguments, so a test that does
+        # that would read the arguments of the pytest process. Running the
+        # suite with an argument turns that into a test failure.
+        run: uv run pytest -q
 
       - name: Upload coverage report
         if: always()
