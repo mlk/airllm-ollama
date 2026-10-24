@@ -9,7 +9,7 @@ code path a real model would take.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -19,10 +19,12 @@ from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
-from fakes import TOKEN_IDS, FakeFactory, FakeModel
+from fakes import TOKEN_IDS, FakeFactory, FakeModel, FakeTokenizer
 
 MODEL = "test-model"
 PROMPT = "Why is the sky blue?"
+BOS = 1
+BOS_TEXT = "<|begin_of_text|>"
 
 
 def _build_service(
@@ -151,6 +153,58 @@ def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
     )
 
     assert factory.model.tokenizer.prompts == [f"System: Be terse.\n\nUser: {PROMPT}\n\nAssistant:"]
+
+
+def test_api_generate_does_not_add_a_second_bos_token(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The template renders the BOS token, the tokenizer must not add a second one."""
+    factory.model.tokenizer.template = "<|begin_of_text|><|im_start|>assistant\n"
+
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert factory.model.tokenizer.prompts == ["<|begin_of_text|><|im_start|>assistant\n"]
+    assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
+def test_api_generate_tokenizes_a_raw_prompt_with_the_special_tokens(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A prompt that no template rendered still needs the special tokens."""
+    service.post("/api/generate", json={"model": MODEL, "prompt": PROMPT})
+
+    assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is True
+
+
+def test_the_model_does_not_see_two_bos_tokens(service: TestClient, factory: FakeFactory) -> None:
+    """The chat template renders the BOS token, the model must not see a second one."""
+
+    class BosTokenizer(FakeTokenizer):
+        """Tokenizer double that adds a BOS token, like the real ones do."""
+
+        def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
+            """Return the token ids of ``text`` with the BOS token of the text."""
+            self.prompts.append(text)
+            self.tokenizations.append(dict(kwargs))
+            # The text carries the BOS token of the chat template.
+            ids = [BOS] * text.count(BOS_TEXT)
+            if kwargs.get("add_special_tokens") is not False:
+                ids.append(BOS)
+            ids.extend(TOKEN_IDS)
+            return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+    factory.model.tokenizer = BosTokenizer()
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
+
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert factory.model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
 
 def test_api_generate_cuts_at_a_stop_sequence(service: TestClient, factory: FakeFactory) -> None:

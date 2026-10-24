@@ -18,6 +18,7 @@ class FakeTokenizer:
     def __init__(self, template: str | None = None) -> None:
         """Create a tokenizer, optionally with a chat template."""
         self.prompts: list[str] = []
+        self.tokenizations: list[dict[str, object]] = []
         self.decoded: list[object] = []
         self.template = template
         self.renderings: list[list[dict[str, str]]] = []
@@ -25,6 +26,7 @@ class FakeTokenizer:
     def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
         """Return fake token ids for ``text``."""
         self.prompts.append(text)
+        self.tokenizations.append(dict(kwargs))
         return {"input_ids": list(TOKEN_IDS), "attention_mask": [1, 1, 1]}
 
     def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:

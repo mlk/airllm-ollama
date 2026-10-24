@@ -255,6 +255,15 @@ src/airllm_ollama/
   A template that rejects the messages falls back to the transcript as well.
 * The rendering lives in `chat.py` and not in the route, so it can be unit
   tested without a model.
+* `chat.render_chat()` and `chat.render_completion()` return a
+  `chat.RenderedPrompt`: the text **and** the way it has to be tokenized. A
+  chat template renders the special tokens of the model itself (Llama 3 starts
+  with `<|begin_of_text|>`), so a templated prompt is tokenized with
+  `add_special_tokens=False` — the template stays the single source of truth
+  and the model does not see a second BOS token. Every other prompt (a raw
+  prompt, the transcript fallback) is tokenized the way the tokenizer does it
+  by default, so a base model still gets its BOS token. This is the same
+  behaviour as `tokenizer.apply_chat_template(..., tokenize=True)`.
 * `engine.generate_chat()` renders and generates in one go, under the same
   locks as `generate()`.
 * The `model` argument of `generate()`, `generate_result()` and

@@ -44,12 +44,28 @@ def test_render_chat_uses_the_chat_template() -> None:
 
     rendered = render_chat(tokenizer, MESSAGES)
 
-    assert rendered == "<|im_start|>assistant\n"
+    assert rendered.text == "<|im_start|>assistant\n"
     assert tokenizer.rendered == [
         {"role": "system", "content": "Be brief."},
         {"role": "user", "content": "Hello"},
         {"role": "assistant", "content": "Hi!"},
     ]
+
+
+def test_a_templated_prompt_is_tokenized_without_the_special_tokens() -> None:
+    """The template renders the special tokens, the tokenizer must not add them."""
+
+    class TemplateTokenizer:
+        """Tokenizer double with a chat template."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the messages the way a chat template would."""
+            return "<|begin_of_text|><|im_start|>assistant\n"
+
+    rendered = render_chat(TemplateTokenizer(), MESSAGES)
+
+    assert rendered.text.startswith("<|begin_of_text|>")
+    assert rendered.add_special_tokens is False
 
 
 def test_render_chat_falls_back_without_a_template() -> None:
@@ -58,7 +74,8 @@ def test_render_chat_falls_back_without_a_template() -> None:
 
     rendered = render_chat(PlainTokenizer(), MESSAGES)
 
-    assert rendered == render_transcript(MESSAGES)
+    assert rendered.text == render_transcript(MESSAGES)
+    assert rendered.add_special_tokens is True
 
 
 def test_render_chat_falls_back_when_the_template_fails() -> None:
@@ -71,7 +88,8 @@ def test_render_chat_falls_back_when_the_template_fails() -> None:
 
     rendered = render_chat(BrokenTokenizer(), MESSAGES)
 
-    assert rendered == render_transcript(MESSAGES)
+    assert rendered.text == render_transcript(MESSAGES)
+    assert rendered.add_special_tokens is True
 
 
 def test_render_chat_falls_back_when_the_template_returns_nothing() -> None:
@@ -82,7 +100,10 @@ def test_render_chat_falls_back_when_the_template_returns_nothing() -> None:
             """Return nothing."""
             return "   "
 
-    assert render_chat(EmptyTokenizer(), MESSAGES) == render_transcript(MESSAGES)
+    rendered = render_chat(EmptyTokenizer(), MESSAGES)
+
+    assert rendered.text == render_transcript(MESSAGES)
+    assert rendered.add_special_tokens is True
 
 
 def test_render_completion_without_a_system_message() -> None:
@@ -93,8 +114,15 @@ def test_render_completion_without_a_system_message() -> None:
             """Render the messages the way a chat template would."""
             return "templated"
 
-    assert render_completion(TemplateTokenizer(), "hello", None) == "hello"
-    assert render_completion(TemplateTokenizer(), "hello", "") == "hello"
+    rendered = render_completion(TemplateTokenizer(), "hello", None)
+
+    assert rendered.text == "hello"
+    assert rendered.add_special_tokens is True
+
+    rendered = render_completion(TemplateTokenizer(), "hello", "")
+
+    assert rendered.text == "hello"
+    assert rendered.add_special_tokens is True
 
 
 def test_render_completion_uses_the_chat_template() -> None:
@@ -107,10 +135,11 @@ def test_render_completion_uses_the_chat_template() -> None:
 
     rendered = render_completion(TemplateTokenizer(), "hello", "Be terse.")
 
-    assert rendered == (
+    assert rendered.text == (
         "templated:[{'role': 'system', 'content': 'Be terse.'}, "
         "{'role': 'user', 'content': 'hello'}]"
     )
+    assert rendered.add_special_tokens is False
 
 
 def test_render_completion_falls_back_to_the_transcript() -> None:
@@ -119,7 +148,8 @@ def test_render_completion_falls_back_to_the_transcript() -> None:
 
     rendered = render_completion(PlainTokenizer(), "hello", "Be terse.")
 
-    assert rendered == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.text == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.add_special_tokens is True
 
 
 def test_render_completion_falls_back_when_the_template_fails() -> None:
@@ -132,4 +162,5 @@ def test_render_completion_falls_back_when_the_template_fails() -> None:
 
     rendered = render_completion(BrokenTokenizer(), "hello", "Be terse.")
 
-    assert rendered == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.text == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.add_special_tokens is True

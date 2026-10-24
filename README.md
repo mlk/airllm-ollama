@@ -305,7 +305,10 @@ curl http://127.0.0.1:8000/api/chat \
 ```
 
 The history is rendered with the **chat template of the model**
-(`tokenizer.apply_chat_template`). Base models have no template — for them the
+(`tokenizer.apply_chat_template`). The template is the single source of truth
+for the format: it renders the special tokens of the model itself (Llama 3
+starts its chat with `<|begin_of_text|>`), so the rendered text is tokenized
+without adding them a second time. Base models have no template — for them the
 history is flattened into a plain transcript:
 
 ```

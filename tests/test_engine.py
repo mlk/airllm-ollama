@@ -525,6 +525,58 @@ def test_without_a_system_message_the_prompt_is_not_rendered() -> None:
     assert model.tokenizer.prompts == ["hello"]
 
 
+def test_a_templated_prompt_is_tokenized_without_the_special_tokens() -> None:
+    """The template renders the special tokens, the tokenizer must not add them."""
+    model = FakeModel()
+    model.tokenizer.template = "<|begin_of_text|><|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello", system="Be terse.")
+
+    assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
+def test_a_raw_prompt_is_tokenized_with_the_special_tokens() -> None:
+    """A prompt that no template rendered still needs the special tokens."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello")
+
+    assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
+
+
+def test_a_templated_chat_is_tokenized_without_the_special_tokens() -> None:
+    model = FakeModel()
+    model.tokenizer.template = "<|begin_of_text|><|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("user", "Hello")])
+
+    assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
+def test_the_transcript_fallback_is_tokenized_with_the_special_tokens() -> None:
+    """The transcript is not rendered by a template, so it keeps its BOS token."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("user", "Hello")])
+
+    assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
+
+
+def test_a_templated_stream_is_tokenized_without_the_special_tokens() -> None:
+    model = FakeModel()
+    model.tokenizer.template = "<|begin_of_text|><|im_start|>assistant\n"
+    model.chunks = ["blue ", "sky"]
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    list(engine.generate_chat_stream([("user", "Hello")]))
+
+    assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
 def test_a_mismatching_model_is_rejected_before_the_model_is_loaded() -> None:
     """A wrong model must not load the checkpoint."""
     factory = RecordingFactory()

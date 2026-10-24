@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from airllm_ollama.chat import ChatTurn, render_chat, render_completion
+from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 from airllm_ollama.streaming import TextStreamer
@@ -460,13 +460,13 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            prompt = render_chat(loaded_model.tokenizer, messages)
-            return self._run_prompt(loaded_model, prompt, started, **kwargs)
+            rendered = render_chat(loaded_model.tokenizer, messages)
+            return self._run_prompt(loaded_model, rendered, started, **kwargs)
 
     def _run_prompt(
         self,
         model: AirLLMModelLike,
-        prompt: str,
+        prompt: RenderedPrompt,
         started: int,
         **kwargs: object,
     ) -> GenerationResult:
@@ -551,19 +551,19 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            prompt = render_chat(loaded_model.tokenizer, messages)
-            yield from self._stream(loaded_model, prompt, started, **kwargs)
+            rendered = render_chat(loaded_model.tokenizer, messages)
+            yield from self._stream(loaded_model, rendered, started, **kwargs)
 
     def _stream(
         self,
         model: AirLLMModelLike,
-        prompt: str,
+        prompt: RenderedPrompt,
         started: int,
         **kwargs: object,
     ) -> Iterator[StreamChunk]:
         """Run a generation and yield its chunks."""
         prompt_started = time.perf_counter_ns()
-        encoded = model.tokenizer(prompt, return_tensors="pt")
+        encoded = _encode(model.tokenizer, prompt)
         prompt_duration = time.perf_counter_ns() - prompt_started
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
@@ -621,9 +621,11 @@ class AirLLMEngine:
             ),
         )
 
-    def _run(self, model: AirLLMModelLike, prompt: str, **kwargs: object) -> tuple[object, int]:
+    def _run(
+        self, model: AirLLMModelLike, prompt: RenderedPrompt, **kwargs: object
+    ) -> tuple[object, int]:
         """Tokenize, generate and return the raw output plus the prompt length."""
-        encoded = model.tokenizer(prompt, return_tensors="pt")
+        encoded = _encode(model.tokenizer, prompt)
         input_ids = encoded["input_ids"]
         attention_mask = encoded.get("attention_mask")
         prompt_tokens = _sequence_length(input_ids)
@@ -664,6 +666,27 @@ class AirLLMEngine:
         if not decoded:
             return ""
         return decoded[0]
+
+
+def _encode(tokenizer: TokenizerLike, prompt: RenderedPrompt) -> Mapping[str, object]:
+    """Tokenize a rendered prompt.
+
+    A prompt that was rendered with the chat template of the model carries the
+    special tokens of the model already, so the tokenizer must not add them a
+    second time — the model would see two beginning-of-sequence tokens.
+
+    Args:
+        tokenizer: The tokenizer of the model.
+        prompt: The rendered prompt.
+
+    Returns:
+        The tokenized prompt.
+    """
+    return tokenizer(
+        prompt.text,
+        return_tensors="pt",
+        add_special_tokens=prompt.add_special_tokens,
+    )
 
 
 def is_mlx_backend(model: object) -> bool:
