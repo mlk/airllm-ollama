@@ -22,8 +22,8 @@ UNDOCUMENTED = {"version"}
 
 # Assignments, active or commented out. Spaces around the = are allowed, like
 # dotenv allows them.
-ACTIVE_SETTING = re.compile(r"^(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z_]+)\s*=")
-COMMENTED_SETTING = re.compile(r"^#\s*(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z_]+)\s*=")
+ACTIVE_SETTING = re.compile(r"^(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z0-9_]+)\s*=")
+COMMENTED_SETTING = re.compile(r"^#\s*(?:export\s+)?(?P<key>AIRLLM_OLLAMA_[A-Z0-9_]+)\s*=")
 
 
 def _defaults() -> dict[str, object]:
@@ -56,7 +56,7 @@ def _commented_values(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("#"):
+        if COMMENTED_SETTING.match(stripped) is None:
             continue
         for key, value in dotenv_values(stream=io.StringIO(stripped.lstrip("#"))).items():
             if key.startswith(PREFIX):
@@ -99,6 +99,13 @@ def _invalid_values(text: str) -> list[str]:
         except ValidationError:
             invalid.append(f"{name} is set to '{value}'")
     return invalid
+
+
+def test_the_allow_list_of_undocumented_settings_is_valid() -> None:
+    """The allow list may only name settings that exist."""
+    unknown = sorted(UNDOCUMENTED - set(_defaults()))
+
+    assert unknown == [], f"undocumented settings that do not exist: {unknown}"
 
 
 def test_every_value_of_the_example_matches_the_default() -> None:
@@ -171,4 +178,9 @@ def test_the_checks_catch_a_drift() -> None:
     assert _mismatches(unknown) == ["'ports' is not a setting of the service"]
 
     missing = "AIRLLM_OLLAMA_HOST=127.0.0.1\n"
-    assert set(_defaults()) - _documented_keys(missing) - UNDOCUMENTED
+    assert "port" in set(_defaults()) - _documented_keys(missing) - UNDOCUMENTED
+
+    commented = "# AIRLLM_OLLAMA_PORT=11434\n"
+    assert _mismatches(commented) == []
+    assert _invalid_values(commented) == []
+    assert "port" in _documented_keys(commented)
