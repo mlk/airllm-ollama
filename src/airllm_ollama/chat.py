@@ -25,10 +25,14 @@ class RenderedPrompt:
 
     Every other prompt is tokenized the way the tokenizer does it by default,
     so that a base model still gets its beginning-of-sequence token.
+
+    ``add_special_tokens`` has no default: every caller has to decide how the
+    prompt is tokenized, so that a new call site cannot bring back the double
+    BOS token by accident.
     """
 
     text: str
-    add_special_tokens: bool = True
+    add_special_tokens: bool
 
 
 def render_transcript(messages: Sequence[ChatTurn]) -> str:
@@ -69,7 +73,7 @@ def render_completion(tokenizer: object, prompt: str, system: str | None) -> Ren
         The rendered prompt and how it has to be tokenized.
     """
     if not system:
-        return RenderedPrompt(prompt)
+        return RenderedPrompt(prompt, add_special_tokens=True)
     return render_chat(tokenizer, [("system", system), ("user", prompt)])
 
 
@@ -88,16 +92,16 @@ def render_chat(tokenizer: object, messages: Sequence[ChatTurn]) -> RenderedProm
     """
     template = getattr(tokenizer, "apply_chat_template", None)
     if template is None:
-        return RenderedPrompt(render_transcript(messages))
+        return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
     payload = [{"role": role, "content": content} for role, content in messages]
     try:
         rendered = template(payload, tokenize=False, add_generation_prompt=True)
     except Exception:
         # The template may reject any message (unknown role, missing tool
         # support, ...); the transcript always works.
-        return RenderedPrompt(render_transcript(messages))
+        return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
     if not isinstance(rendered, str) or not rendered.strip():
-        return RenderedPrompt(render_transcript(messages))
+        return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
     # The template rendered the special tokens of the model, so the tokenizer
     # must not add them a second time.
     return RenderedPrompt(rendered, add_special_tokens=False)

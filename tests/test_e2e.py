@@ -159,23 +159,35 @@ def test_api_generate_does_not_add_a_second_bos_token(
     service: TestClient, factory: FakeFactory
 ) -> None:
     """The template renders the BOS token, the tokenizer must not add a second one."""
-    factory.model.tokenizer.template = "<|begin_of_text|><|im_start|>assistant\n"
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
 
-    service.post(
+    response = service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == ["<|begin_of_text|><|im_start|>assistant\n"]
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [f"{BOS_TEXT}<|im_start|>assistant\n"]
     assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is False
 
 
-def test_api_generate_tokenizes_a_raw_prompt_with_the_special_tokens(
-    service: TestClient, factory: FakeFactory
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt": PROMPT},
+        {"prompt": PROMPT, "system": "Be terse.", "raw": True},
+    ],
+)
+def test_api_generate_tokenizes_an_untemplated_prompt_with_the_special_tokens(
+    service: TestClient, factory: FakeFactory, payload: dict[str, object]
 ) -> None:
     """A prompt that no template rendered still needs the special tokens."""
-    service.post("/api/generate", json={"model": MODEL, "prompt": PROMPT})
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
 
+    response = service.post("/api/generate", json={"model": MODEL, **payload})
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [PROMPT]
     assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is True
 
 
@@ -193,8 +205,9 @@ def test_the_model_does_not_see_two_bos_tokens(
     factory.model.tokenizer = BosTokenizer()
     factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
 
-    service.post(path, json={"model": MODEL, **payload})
+    response = service.post(path, json={"model": MODEL, **payload})
 
+    assert response.status_code == 200
     assert factory.model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
 

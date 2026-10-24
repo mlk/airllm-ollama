@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from types import ModuleType
 
 import pytest
@@ -633,22 +633,14 @@ def test_generated_tokens_are_counted_for_text_backends() -> None:
 
 def test_the_text_of_a_backend_is_counted_without_the_special_tokens() -> None:
     """A BOS token that the model never generated must not be counted."""
-
-    class CountingTokenizer(BosTokenizer):
-        """Tokenizer double that reports the tokens of the text."""
-
-        def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
-            """Return the token ids of the text, without a BOS token."""
-            self.prompts.append(text)
-            self.tokenizations.append(dict(kwargs))
-            return {"input_ids": list(TOKEN_IDS), "attention_mask": [1, 1, 1]}
-
     model = FakeModel(output="some text")
-    model.tokenizer = CountingTokenizer()
+    model.tokenizer = BosTokenizer()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
     result = engine.generate_result("hi")
 
+    # The double counts four tokens when the tokenizer adds a BOS token and
+    # three when it does not — the text of the backend has three.
     assert result.generated_tokens == len(TOKEN_IDS)
     assert model.tokenizer.tokenizations[-1]["add_special_tokens"] is False
 
