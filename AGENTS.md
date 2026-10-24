@@ -203,15 +203,17 @@ src/airllm_ollama/
 * `options.stop` is applied by cutting the response at the first stop sequence.
   This happens *after* the generation, not token by token — Ollama stops the
   model early. Fine for the non-streaming shortcut, revisit with streaming.
-* `system` is rendered with the chat template of the model (issue #14): the
+* The prompt is rendered with the chat template of the model (issue #31): the
   engine renders the system message and the prompt as a chat
-  (`chat.render_completion()`), the same way `/api/chat` does it. Models
-  without a template get the plain transcript of `chat.render_transcript()`.
+  (`chat.render_completion()`), the same way `/api/chat` does it. The template
+  is applied to **every** prompt, not only to the ones with a system message —
+  Ollama does it that way. Models without a template get the system message
+  joined in front of the prompt (`"Be terse.\n\nWhy is the sky blue?"`), the
+  way Ollama does it.
   The rendering happens under the generation lock, after the model was
   validated and loaded — a wrong model never loads the checkpoint.
-* A request with `raw: true` is sent unchanged, without the template. The
-  template is otherwise only applied when a `system` message is present; Ollama
-  applies it to every prompt. Tracked in #31.
+* A request with `raw: true` is sent unchanged, without the template, and the
+  system message is dropped.
 * A raw prompt is tokenized with the special tokens, so a client that rendered
   the template itself (and sends the BOS token with it) gets a second one.
   Tracked in #44 — do not work around it with a heuristic.
@@ -255,6 +257,10 @@ src/airllm_ollama/
   (`tokenizer.apply_chat_template`); models without a template get the plain
   transcript of `chat.render_transcript()` (`User: ...\n\nAssistant:`).
   A template that rejects the messages falls back to the transcript as well.
+* `chat.apply_chat_template()` is the primitive behind both renderings: it
+  returns the rendered prompt or `None` when the model has no template or the
+  template refuses the messages. `render_chat()` falls back to the transcript,
+  `render_completion()` to the plain prompt.
 * The rendering lives in `chat.py` and not in the route, so it can be unit
   tested without a model.
 * `chat.render_chat()` and `chat.render_completion()` return a
@@ -273,9 +279,11 @@ src/airllm_ollama/
   locks as `generate()`.
 * The `model` argument of `generate()`, `generate_result()` and
   `generate_chat()` is an explicit keyword-only parameter: it is validated and
-  never forwarded to AirLLM. `ChatMessage.role` is free-form (Ollama is
-  permissive too); tool calls are not supported yet, so a `tool` role is
-  rendered like any other role.
+  never forwarded to AirLLM. The `raw` argument of `generate()`,
+  `generate_result()` and `generate_stream()` is keyword-only as well: it asks
+  for the prompt without the chat template and is never forwarded to AirLLM.
+  `ChatMessage.role` is free-form (Ollama is permissive too); tool calls are
+  not supported yet, so a `tool` role is rendered like any other role.
 
 ## Data usage policy (important)
 

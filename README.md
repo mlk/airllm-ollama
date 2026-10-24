@@ -260,7 +260,7 @@ curl -N http://127.0.0.1:8000/api/generate \
 | --- | --- |
 | `model` | Required; an unknown model is answered with `404` and `{"error": "..."}` |
 | `prompt` | The text to complete |
-| `system` | Rendered with the chat template of the model, like `/api/chat` does; models without a template get the plain transcript. Without a `system` message the prompt is sent unchanged (Ollama would still apply the template) |
+| `system` | Rendered with the chat template of the model, like `/api/chat` does; models without a template get the system message in front of the prompt |
 | `options.temperature` / `top_p` / `top_k` | Applied (and sampling is enabled) |
 | `options.num_predict` | Mapped to the number of generated tokens |
 | `options.num_ctx` | Mapped to the maximum sequence length |
@@ -268,8 +268,14 @@ curl -N http://127.0.0.1:8000/api/generate \
 | `options.stop` | The response is cut at the first stop sequence |
 | `options.seed`, `mirostat*`, `presence_penalty`, `frequency_penalty` | Accepted, but not applied (no llama.cpp sampler) |
 | `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive. A service-wide default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` |
-| `raw` | Sends the prompt unchanged, without the chat template (like Ollama) |
+| `raw` | Sends the prompt unchanged, without the chat template (like Ollama). The system message is dropped |
 | `format`, `template`, `context`, `suffix` | Accepted, but not applied |
+
+The prompt is rendered with the **chat template of the model**
+(`tokenizer.apply_chat_template`), like Ollama does it — the template is
+applied to every prompt, not only to the ones with a system message. A model
+without a template gets the prompt with the system message in front of it
+(`"Be terse.\n\nWhy is the sky blue?"`).
 
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
 model cannot be loaded and `400` for an invalid request body.

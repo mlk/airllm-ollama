@@ -129,6 +129,18 @@ def test_api_generate_renders_the_system_prompt_with_the_chat_template(
     ]
 
 
+def test_api_generate_applies_the_chat_template_without_a_system_message(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """Ollama applies the template to every prompt, not only to the ones with a system."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
+    service.post("/api/generate", json={"model": MODEL, "prompt": PROMPT})
+
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [[{"role": "user", "content": PROMPT}]]
+
+
 def test_api_generate_ignores_the_system_message_of_a_raw_request(
     service: TestClient, factory: FakeFactory
 ) -> None:
@@ -144,15 +156,16 @@ def test_api_generate_ignores_the_system_message_of_a_raw_request(
     assert factory.model.tokenizer.renderings == []
 
 
-def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
+def test_api_generate_joins_the_system_message_without_a_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
+    """A model without a template gets the system message in front of the prompt."""
     service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == [f"System: Be terse.\n\nUser: {PROMPT}\n\nAssistant:"]
+    assert factory.model.tokenizer.prompts == [f"Be terse.\n\n{PROMPT}"]
 
 
 def test_api_generate_does_not_add_a_second_bos_token(
@@ -171,20 +184,29 @@ def test_api_generate_does_not_add_a_second_bos_token(
     assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is False
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"prompt": PROMPT},
-        {"prompt": PROMPT, "system": "Be terse.", "raw": True},
-    ],
-)
-def test_api_generate_tokenizes_an_untemplated_prompt_with_the_special_tokens(
-    service: TestClient, factory: FakeFactory, payload: dict[str, object]
+def test_api_generate_tokenizes_a_templated_prompt_without_the_special_tokens(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The template rendered the prompt, so the tokenizer must not add the tokens."""
+    factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
+
+    response = service.post("/api/generate", json={"model": MODEL, "prompt": PROMPT})
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [f"{BOS_TEXT}<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.tokenizations[0]["add_special_tokens"] is False
+
+
+def test_api_generate_tokenizes_a_raw_prompt_with_the_special_tokens(
+    service: TestClient, factory: FakeFactory
 ) -> None:
     """A prompt that no template rendered still needs the special tokens."""
     factory.model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
 
-    response = service.post("/api/generate", json={"model": MODEL, **payload})
+    response = service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse.", "raw": True},
+    )
 
     assert response.status_code == 200
     assert factory.model.tokenizer.prompts == [PROMPT]
@@ -339,6 +361,27 @@ def test_api_generate_streams_the_answer(service: TestClient, factory: FakeFacto
     assert events[0]["done"] is False
     assert events[-1]["done"] is True
     assert events[-1]["eval_count"] == 0
+
+
+def test_a_raw_stream_sends_the_prompt_unchanged(service: TestClient, factory: FakeFactory) -> None:
+    """`raw` asks for the prompt without the template, in the streaming path too."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.chunks = ["blue ", "sky"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "system": "Be terse.",
+            "raw": True,
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.prompts == [PROMPT]
+    assert factory.model.tokenizer.renderings == []
 
 
 def test_api_chat_streams_the_answer(service: TestClient, factory: FakeFactory) -> None:

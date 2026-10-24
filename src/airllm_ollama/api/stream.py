@@ -55,6 +55,7 @@ def generate_events(
     model: str,
     options: dict[str, object],
     system: str | None = None,
+    raw: bool = False,
     stop: list[str] | None = None,
 ) -> Iterator[str]:
     """Yield the streaming events of a completion.
@@ -65,6 +66,7 @@ def generate_events(
         model: The model the client asked for.
         options: The translated generation options.
         system: An optional system message, rendered with the chat template.
+        raw: Whether the prompt is sent unchanged, without the chat template.
         stop: The stop sequences requested by the client.
 
     Yields:
@@ -73,7 +75,7 @@ def generate_events(
     created_at = _now()
     stream_format = configured_format()
     stop_filter = StopSequenceFilter(stop)
-    for chunk in engine.generate_stream(prompt, system=system, model=model, **options):
+    for chunk in engine.generate_stream(prompt, system=system, raw=raw, model=model, **options):
         if chunk.result is not None:
             yield format_event(_final_payload(model, created_at, chunk, options), stream_format)
             return
