@@ -123,25 +123,28 @@ def _render_with_template(template: ChatTemplate, messages: Sequence[ChatTurn]) 
 
 
 def _merge_system_message(messages: Sequence[ChatTurn]) -> list[ChatTurn] | None:
-    """Merge the system message into the first user turn.
+    """Merge the system messages into the first user turn.
 
     A template without support for the system role refuses the messages. The
-    system message becomes part of the first user turn instead, so that the
+    system messages become part of the first user turn instead, so that the
     model still gets its own format.
 
     Args:
         messages: The chat history as ``(role, content)`` pairs.
 
     Returns:
-        The messages with the system message merged, or ``None`` when there is
-        no system message or no user turn to merge it into.
+        The messages with the system messages merged, or ``None`` when there is
+        no system message or no user turn to merge them into.
     """
-    if len(messages) < 2 or messages[0][0] != "system":
+    systems = [content for role, content in messages if role == "system"]
+    if not systems:
         return None
-    system = messages[0][1]
+    system = SEPARATOR.join(systems)
     merged: list[ChatTurn] = []
     merged_system = False
-    for role, content in messages[1:]:
+    for role, content in messages:
+        if role == "system":
+            continue
         if role == "user" and not merged_system:
             # An empty system message is dropped instead of adding newlines.
             prefix = f"{system}{SEPARATOR}" if system.strip() else ""

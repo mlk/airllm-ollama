@@ -142,6 +142,21 @@ def test_the_history_after_the_first_user_turn_is_kept() -> None:
     ]
 
 
+def test_every_system_message_is_merged_into_the_first_user_turn() -> None:
+    """A system message in the middle of the history is merged as well."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    render_chat(tokenizer, [("user", "Hello"), ("system", "Be brief."), ("user", "Again")])
+
+    assert tokenizer.renderings == [
+        [
+            {"role": "user", "content": "Be brief.\n\nHello"},
+            {"role": "user", "content": "Again"},
+        ]
+    ]
+
+
 def test_an_empty_system_message_is_dropped_by_the_merge() -> None:
     """An empty system message must not add newlines to the user turn."""
     tokenizer = SystemRoleTokenizer()
