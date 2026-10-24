@@ -143,7 +143,9 @@ def _merge_system_message(messages: Sequence[ChatTurn]) -> list[ChatTurn] | None
     merged_system = False
     for role, content in messages[1:]:
         if role == "user" and not merged_system:
-            merged.append(("user", f"{system}{SEPARATOR}{content}"))
+            # An empty system message is dropped instead of adding newlines.
+            prefix = f"{system}{SEPARATOR}" if system.strip() else ""
+            merged.append(("user", f"{prefix}{content}"))
             merged_system = True
             continue
         merged.append((role, content))

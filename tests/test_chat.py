@@ -142,6 +142,16 @@ def test_the_history_after_the_first_user_turn_is_kept() -> None:
     ]
 
 
+def test_an_empty_system_message_is_dropped_by_the_merge() -> None:
+    """An empty system message must not add newlines to the user turn."""
+    tokenizer = SystemRoleTokenizer()
+    tokenizer.template = "templated"
+
+    render_chat(tokenizer, [("system", "   "), ("user", "Hello")])
+
+    assert tokenizer.renderings == [[{"role": "user", "content": "Hello"}]]
+
+
 def test_a_template_that_refuses_everything_falls_back_to_the_transcript() -> None:
     class BrokenTokenizer:
         """Tokenizer double whose template refuses every message."""
