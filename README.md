@@ -32,7 +32,11 @@ flowchart TD
         api --> engine
     end
 
-    router -->|"High Speed / Draft"| ollama["Standard Ollama API<br/>(a separate service)"]
+    subgraph external["External service"]
+        ollama["Standard Ollama API"]
+    end
+
+    router -->|"High Speed / Draft"| ollama
     router -->|"High Accuracy / Complex"| api
 ```
 
@@ -40,8 +44,9 @@ flowchart TD
 request whether a prompt needs the speed of a standard Ollama node or the
 accuracy of a large model served by AirLLM. This repository provides the
 "High Accuracy / Complex" branch of that decision — an Ollama-compatible API in
-front of an AirLLM engine — so a client only has to change the base URL to
-switch backends.
+front of an AirLLM engine. Switching backends is a matter of the base URL and
+of the model name the backend serves: this service serves exactly one model
+and answers a request for another one with a `404`.
 
 ---
 
