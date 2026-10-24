@@ -22,16 +22,25 @@ In microservice architectures or multi-agent AI pipelines, downstream applicatio
 
 ```mermaid
 flowchart TD
-    client["Client Application"]
-    router{"Inference Router / Proxy"}
+    subgraph app["Client Application<br/>(the routing lives here)"]
+        router{"Chooses the backend<br/>per request"}
+    end
 
-    client --> router
-    router -->|"High Speed / Draft"| ollama["Standard Ollama API"]
-    router -->|"High Accuracy / Complex"| wrapper["AirLLM Wrapper"]
-    wrapper --> engine["AirLLM Model Engine"]
+    subgraph repo["airllm-ollama (this repository)"]
+        api["Ollama-compatible API<br/>/api/generate · /api/chat"]
+        engine["AirLLM Engine<br/>layer-wise inference"]
+        api --> engine
+    end
+
+    router -->|"High Speed / Draft"| ollama["Standard Ollama API<br/>(a separate service)"]
+    router -->|"High Accuracy / Complex"| api
 ```
 
-When speed is prioritized, requests are routed to standard Ollama nodes. When deep accuracy or large-context reasoning is required, requests are routed seamlessly to this AirLLM wrapper.
+**The routing is not part of this service.** The client application decides per
+request whether a prompt needs the speed of a standard Ollama node or the
+accuracy of a large model served by AirLLM. This repository provides the right
+hand side of that decision — an Ollama-compatible API in front of an AirLLM
+engine — so a client only has to change the base URL to switch backends.
 
 ---
 
