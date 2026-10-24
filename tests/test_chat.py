@@ -106,7 +106,25 @@ def test_render_chat_falls_back_when_the_template_returns_nothing() -> None:
     assert rendered.add_special_tokens is True
 
 
-def test_render_completion_without_a_system_message() -> None:
+def test_render_completion_applies_the_chat_template_without_a_system_message() -> None:
+    """Ollama applies the template to every prompt."""
+
+    class TemplateTokenizer:
+        """Tokenizer double with a chat template."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the messages the way a chat template would."""
+            return f"templated:{messages}"
+
+    rendered = render_completion(TemplateTokenizer(), "hello", None)
+
+    assert rendered.text == "templated:[{'role': 'user', 'content': 'hello'}]"
+    assert rendered.add_special_tokens is False
+
+
+def test_render_completion_sends_a_raw_prompt_unchanged() -> None:
+    """`raw` asks for the prompt without the template."""
+
     class TemplateTokenizer:
         """Tokenizer double with a chat template."""
 
@@ -114,12 +132,7 @@ def test_render_completion_without_a_system_message() -> None:
             """Render the messages the way a chat template would."""
             return "templated"
 
-    rendered = render_completion(TemplateTokenizer(), "hello", None)
-
-    assert rendered.text == "hello"
-    assert rendered.add_special_tokens is True
-
-    rendered = render_completion(TemplateTokenizer(), "hello", "")
+    rendered = render_completion(TemplateTokenizer(), "hello", "Be terse.", raw=True)
 
     assert rendered.text == "hello"
     assert rendered.add_special_tokens is True
@@ -142,17 +155,29 @@ def test_render_completion_uses_the_chat_template() -> None:
     assert rendered.add_special_tokens is False
 
 
-def test_render_completion_falls_back_to_the_transcript() -> None:
+def test_render_completion_joins_the_system_message_without_a_template() -> None:
+    """A model without a template gets the system message in front of the prompt."""
+
     class PlainTokenizer:
         """Tokenizer double without a chat template."""
 
     rendered = render_completion(PlainTokenizer(), "hello", "Be terse.")
 
-    assert rendered.text == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.text == "Be terse.\n\nhello"
     assert rendered.add_special_tokens is True
 
 
-def test_render_completion_falls_back_when_the_template_fails() -> None:
+def test_render_completion_keeps_the_prompt_without_a_template() -> None:
+    class PlainTokenizer:
+        """Tokenizer double without a chat template."""
+
+    rendered = render_completion(PlainTokenizer(), "hello", None)
+
+    assert rendered.text == "hello"
+    assert rendered.add_special_tokens is True
+
+
+def test_render_completion_joins_the_system_message_when_the_template_fails() -> None:
     class BrokenTokenizer:
         """Tokenizer double whose template rejects every message."""
 
@@ -162,5 +187,5 @@ def test_render_completion_falls_back_when_the_template_fails() -> None:
 
     rendered = render_completion(BrokenTokenizer(), "hello", "Be terse.")
 
-    assert rendered.text == "System: Be terse.\n\nUser: hello\n\nAssistant:"
+    assert rendered.text == "Be terse.\n\nhello"
     assert rendered.add_special_tokens is True

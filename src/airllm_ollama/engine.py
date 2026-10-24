@@ -364,6 +364,7 @@ class AirLLMEngine:
         *,
         model: str | None = None,
         system: str | None = None,
+        raw: bool = False,
         **kwargs: object,
     ) -> str:
         """Generate text for ``prompt``.
@@ -374,6 +375,8 @@ class AirLLMEngine:
                 template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
+            raw: Whether the prompt is sent unchanged, without the chat
+                template. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -383,7 +386,7 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self._generate(prompt, system, model=model, **kwargs).text
+        return self._generate(prompt, system, model=model, raw=raw, **kwargs).text
 
     def generate_result(
         self,
@@ -391,6 +394,7 @@ class AirLLMEngine:
         *,
         model: str | None = None,
         system: str | None = None,
+        raw: bool = False,
         **kwargs: object,
     ) -> GenerationResult:
         """Generate text for ``prompt`` and report the generation statistics.
@@ -401,6 +405,8 @@ class AirLLMEngine:
                 template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
+            raw: Whether the prompt is sent unchanged, without the chat
+                template. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -410,7 +416,7 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self._generate(prompt, system, model=model, **kwargs)
+        return self._generate(prompt, system, model=model, raw=raw, **kwargs)
 
     def _generate(
         self,
@@ -419,6 +425,7 @@ class AirLLMEngine:
         /,
         *,
         model: str | None = None,
+        raw: bool = False,
         **kwargs: object,
     ) -> GenerationResult:
         """Validate the model, load it, render the prompt and generate."""
@@ -427,7 +434,7 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_completion(loaded_model.tokenizer, prompt, system)
+            rendered = render_completion(loaded_model.tokenizer, prompt, system, raw)
             return self._run_prompt(loaded_model, rendered, started, **kwargs)
 
     def generate_chat(
@@ -493,6 +500,7 @@ class AirLLMEngine:
         *,
         model: str | None = None,
         system: str | None = None,
+        raw: bool = False,
         **kwargs: object,
     ) -> Iterator[StreamChunk]:
         """Generate text, yielding the chunks as they are produced.
@@ -507,6 +515,8 @@ class AirLLMEngine:
                 template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
+            raw: Whether the prompt is sent unchanged, without the chat
+                template. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Yields:
@@ -521,7 +531,7 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_completion(loaded_model.tokenizer, prompt, system)
+            rendered = render_completion(loaded_model.tokenizer, prompt, system, raw)
             yield from self._stream(loaded_model, rendered, started, **kwargs)
 
     def generate_chat_stream(

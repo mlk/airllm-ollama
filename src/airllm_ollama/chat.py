@@ -57,28 +57,30 @@ def render_transcript(messages: Sequence[ChatTurn]) -> str:
     return "\n\n".join(lines)
 
 
-def render_completion(tokenizer: object, prompt: str, system: str | None) -> RenderedPrompt:
-    """Render a completion prompt together with its system message.
-
-    A model with a chat template expects the system message in the format of
-    that template, so both are rendered as a chat — the same way
-    ``/api/chat`` does it. Models without a template get the plain transcript.
+def apply_chat_template(tokenizer: object, messages: Sequence[ChatTurn]) -> str | None:
+    """Render the messages with the chat template of the model.
 
     Args:
         tokenizer: The tokenizer of the model.
-        prompt: The prompt of the user.
-        system: The system message, if any.
+        messages: The chat history as ``(role, content)`` pairs.
 
     Returns:
-        The rendered prompt and how it has to be tokenized.
+        The rendered prompt, or ``None`` when the model has no chat template
+        or when the template refuses the messages.
     """
-    if not system:
-        # No template rendered the prompt, so the tokenizer adds the special
-        # tokens. A `raw: true` request ends up here as well — a client that
-        # rendered the template itself sends the BOS token with the prompt
-        # (#31, #44).
-        return RenderedPrompt(prompt, add_special_tokens=True)
-    return render_chat(tokenizer, [("system", system), ("user", prompt)])
+    template = getattr(tokenizer, "apply_chat_template", None)
+    if template is None:
+        return None
+    payload = [{"role": role, "content": content} for role, content in messages]
+    try:
+        rendered = template(payload, tokenize=False, add_generation_prompt=True)
+    except Exception:
+        # The template may reject any message (unknown role, missing tool
+        # support, ...); the caller decides what to do instead.
+        return None
+    if not isinstance(rendered, str) or not rendered.strip():
+        return None
+    return rendered
 
 
 def render_chat(tokenizer: object, messages: Sequence[ChatTurn]) -> RenderedPrompt:
@@ -94,18 +96,49 @@ def render_chat(tokenizer: object, messages: Sequence[ChatTurn]) -> RenderedProm
     Returns:
         The rendered prompt and how it has to be tokenized.
     """
-    template = getattr(tokenizer, "apply_chat_template", None)
-    if template is None:
-        return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
-    payload = [{"role": role, "content": content} for role, content in messages]
-    try:
-        rendered = template(payload, tokenize=False, add_generation_prompt=True)
-    except Exception:
-        # The template may reject any message (unknown role, missing tool
-        # support, ...); the transcript always works.
-        return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
-    if not isinstance(rendered, str) or not rendered.strip():
+    rendered = apply_chat_template(tokenizer, messages)
+    if rendered is None:
         return RenderedPrompt(render_transcript(messages), add_special_tokens=True)
     # The template rendered the special tokens of the model, so the tokenizer
     # must not add them a second time.
+    return RenderedPrompt(rendered, add_special_tokens=False)
+
+
+def render_completion(
+    tokenizer: object, prompt: str, system: str | None, raw: bool = False
+) -> RenderedPrompt:
+    """Render a completion prompt together with its system message.
+
+    Ollama applies the chat template of the model to **every** prompt, so the
+    prompt is rendered as a chat here as well — the same way ``/api/chat``
+    renders the history. A request with ``raw`` set is sent unchanged, without
+    the template.
+
+    A model without a chat template gets the prompt with the system message
+    joined in front of it, the way Ollama does it.
+
+    Args:
+        tokenizer: The tokenizer of the model.
+        prompt: The prompt of the user.
+        system: The system message, if any.
+        raw: Whether the prompt is sent unchanged, without the template.
+
+    Returns:
+        The rendered prompt and how it has to be tokenized.
+    """
+    if raw:
+        # `raw` asks for the prompt without the template, like Ollama does.
+        # A client that rendered the template itself sends the BOS token with
+        # the prompt (#44).
+        return RenderedPrompt(prompt, add_special_tokens=True)
+    messages: list[ChatTurn] = [("user", prompt)]
+    if system:
+        messages.insert(0, ("system", system))
+    rendered = apply_chat_template(tokenizer, messages)
+    if rendered is None:
+        # No template: the system message is joined with the prompt, the way
+        # Ollama does it for a model without a template.
+        if system:
+            return RenderedPrompt(f"{system}\n\n{prompt}", add_special_tokens=True)
+        return RenderedPrompt(prompt, add_special_tokens=True)
     return RenderedPrompt(rendered, add_special_tokens=False)

@@ -519,13 +519,46 @@ def test_the_system_message_is_rendered_with_the_chat_template() -> None:
     assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
 
 
-def test_without_a_system_message_the_prompt_is_not_rendered() -> None:
+def test_the_prompt_is_rendered_with_the_chat_template_without_a_system_message() -> None:
+    """Ollama applies the template to every prompt, not only to the ones with a system."""
+    model = FakeModel()
+    model.tokenizer.template = "<|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello")
+
+    assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert model.tokenizer.renderings == [[{"role": "user", "content": "hello"}]]
+
+
+def test_a_raw_prompt_is_sent_unchanged() -> None:
+    """`raw` asks for the prompt without the template."""
+    model = FakeModel()
+    model.tokenizer.template = "<|im_start|>assistant\n"
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello", system="Be terse.", raw=True)
+
+    assert model.tokenizer.prompts == ["hello"]
+    assert model.tokenizer.renderings == []
+
+
+def test_without_a_system_message_and_a_template_the_prompt_is_unchanged() -> None:
     model = FakeModel()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
     engine.generate("hello")
 
     assert model.tokenizer.prompts == ["hello"]
+
+
+def test_without_a_template_the_system_message_is_joined_with_the_prompt() -> None:
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate("hello", system="Be terse.")
+
+    assert model.tokenizer.prompts == ["Be terse.\n\nhello"]
 
 
 def test_a_templated_prompt_is_tokenized_without_the_special_tokens() -> None:
@@ -591,6 +624,19 @@ def test_a_templated_stream_is_tokenized_without_the_special_tokens() -> None:
 
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
+
+
+def test_a_raw_stream_sends_the_prompt_unchanged() -> None:
+    """`raw` asks for the prompt without the template, in the streaming path too."""
+    model = FakeModel()
+    model.tokenizer.template = "<|im_start|>assistant\n"
+    model.chunks = ["blue ", "sky"]
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    list(engine.generate_stream("hello", system="Be terse.", raw=True))
+
+    assert model.tokenizer.prompts == ["hello"]
+    assert model.tokenizer.renderings == []
 
 
 def test_a_mismatching_model_is_rejected_before_the_model_is_loaded() -> None:

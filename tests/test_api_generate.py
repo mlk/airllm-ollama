@@ -64,7 +64,9 @@ def test_generate_returns_the_ollama_response_shape(client: TestClient, engine: 
 def test_generate_delegates_to_the_engine(client: TestClient, engine: Any) -> None:
     client.post("/api/generate", json={"model": MODEL, "prompt": "hello"})
 
-    engine.return_value.generate_result.assert_called_once_with("hello", system=None, model=MODEL)
+    engine.return_value.generate_result.assert_called_once_with(
+        "hello", system=None, raw=False, model=MODEL
+    )
 
 
 def test_generate_maps_ollama_options(client: TestClient, engine: Any) -> None:
@@ -109,7 +111,19 @@ def test_generate_renders_the_system_prompt(client: TestClient, engine: Any) -> 
     )
 
     engine.return_value.generate_result.assert_called_once_with(
-        "hello", system="You are helpful.", model=MODEL
+        "hello", system="You are helpful.", raw=False, model=MODEL
+    )
+
+
+def test_generate_forwards_the_raw_flag(client: TestClient, engine: Any) -> None:
+    """`raw` asks for the prompt without the template."""
+    client.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": "hello", "system": "You are helpful.", "raw": True},
+    )
+
+    engine.return_value.generate_result.assert_called_once_with(
+        "hello", system="You are helpful.", raw=True, model=MODEL
     )
 
 
