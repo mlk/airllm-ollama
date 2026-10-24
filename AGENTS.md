@@ -290,5 +290,8 @@ The maintainer is on a **metered connection** — never download large artifacts
 * Use `pytest-mock`'s `mocker` fixture for patching third-party calls (e.g. AirLLM)
   so the suite stays fast and offline.
 * Shared fixtures live in `tests/conftest.py` (`app`, `client`, `settings`).
+* A new setting has to be documented in `.env.example` — `tests/test_env_example.py`
+  fails otherwise. A commented out line that shows a value other than the default
+  ends with `# alternative`, so the guard can tell it apart from a default.
 * Cover the happy path **and** the error paths (validation errors, model mismatch,
   upstream failures) — the acceptance criteria ask for ≥ 80 % coverage.
