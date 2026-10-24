@@ -653,8 +653,13 @@ class AirLLMEngine:
     ) -> int:
         """Return the number of tokens the model generated."""
         if isinstance(raw_output, str):
-            # Backends that decode themselves only return the new tokens.
-            return _sequence_length(model.tokenizer(raw_output)["input_ids"])
+            # Backends that decode themselves only return the new tokens. The
+            # text is tokenized without the special tokens, otherwise the
+            # tokenizer would add a BOS token the model never generated and
+            # the count would be one too high.
+            return _sequence_length(
+                model.tokenizer(raw_output, add_special_tokens=False)["input_ids"]
+            )
         return max(_sequence_length(raw_output) - prompt_tokens, 0)
 
     @staticmethod

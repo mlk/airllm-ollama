@@ -52,6 +52,28 @@ class FakeTokenizer:
         return self.template
 
 
+class BosTokenizer(FakeTokenizer):
+    """Tokenizer double that adds a BOS token, like the real ones do.
+
+    A chat template renders the BOS token of the model itself, so the double
+    counts the BOS tokens of the text and adds another one when the tokenizer
+    is allowed to add the special tokens.
+    """
+
+    BOS = 1
+    BOS_TEXT = "<|begin_of_text|>"
+
+    def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
+        """Return the token ids of ``text`` with the BOS token of the text."""
+        self.prompts.append(text)
+        self.tokenizations.append(dict(kwargs))
+        ids = [self.BOS] * text.count(self.BOS_TEXT)
+        if kwargs.get("add_special_tokens") is not False:
+            ids.append(self.BOS)
+        ids.extend(TOKEN_IDS)
+        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+
 class FakeModel:
     """AirLLM model double recording how it was called."""
 

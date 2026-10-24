@@ -264,6 +264,9 @@ src/airllm_ollama/
   prompt, the transcript fallback) is tokenized the way the tokenizer does it
   by default, so a base model still gets its BOS token. This is the same
   behaviour as `tokenizer.apply_chat_template(..., tokenize=True)`.
+* A template that does not render `{{ bos_token }}` therefore leaves the model
+  without a BOS token — the same as in transformers. Do not work around that
+  with a heuristic; the template is the single source of truth.
 * `engine.generate_chat()` renders and generates in one go, under the same
   locks as `generate()`.
 * The `model` argument of `generate()`, `generate_result()` and
