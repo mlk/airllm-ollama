@@ -103,17 +103,17 @@ def _documented_keys(text: str) -> set[str]:
 def _mismatches(text: str) -> list[str]:
     """Return the active values that differ from the default of the setting."""
     mismatches: list[str] = []
+    defaults = _defaults()
     for name, value in _active_values(text).items():
-        field = Settings.model_fields.get(name)
-        if field is None:
-            mismatches.append(f"'{name}' is not a setting of the service")
+        if name not in defaults:
+            # An unknown setting is reported by the key check.
             continue
         try:
             parsed = _parse(name, value)
         except ValidationError:
             # A value that does not fit its setting is reported separately.
             continue
-        if parsed != field.get_default(call_default_factory=True):
+        if parsed != defaults[name]:
             mismatches.append(f"{name} is set to '{value}'")
     return mismatches
 
@@ -234,18 +234,29 @@ def test_a_commented_alternative_does_not_hide_the_active_value() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "mismatches", "invalid"),
+    ("text", "mismatches", "invalid", "stale"),
     [
-        ("AIRLLM_OLLAMA_PORT=11434\n", ["port is set to '11434'"], []),
-        ("AIRLLM_OLLAMA_PORT=80OO\n", [], ["port is set to '80OO'"]),
-        ("AIRLLM_OLLAMA_PORTS=8000\n", ["'ports' is not a setting of the service"], []),
-        ("# AIRLLM_OLLAMA_PORT=11434\n", [], []),
+        ("AIRLLM_OLLAMA_PORT=11434\n", ["port is set to '11434'"], [], []),
+        ("AIRLLM_OLLAMA_PORT=80OO\n", [], ["port is set to '80OO'"], []),
+        ("AIRLLM_OLLAMA_PORTS=8000\n", [], [], []),  # an unknown key
+        ("# AIRLLM_OLLAMA_PORT=11434\n", [], [], ["port is documented as '11434'"]),
     ],
 )
-def test_the_checks_catch_a_drift(text: str, mismatches: list[str], invalid: list[str]) -> None:
+def test_the_checks_catch_a_drift(
+    text: str, mismatches: list[str], invalid: list[str], stale: list[str]
+) -> None:
     """The guard has to fail when the example file drifts away."""
     assert _mismatches(text) == mismatches
     assert _invalid_values(text) == invalid
+    assert _stale_commented_values(text) == stale
+
+
+def test_an_unknown_setting_is_reported() -> None:
+    """A key that is not a setting has to be reported."""
+    text = "AIRLLM_OLLAMA_PORTS=8000\n"
+    unknown = sorted(name for name in _documented_keys(text) if name not in _defaults())
+
+    assert unknown == ["ports"]
 
 
 def test_the_checks_report_a_missing_setting() -> None:
