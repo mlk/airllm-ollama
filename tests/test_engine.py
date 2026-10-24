@@ -540,7 +540,7 @@ def test_a_templated_prompt_is_tokenized_without_the_special_tokens() -> None:
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
 
-def test_a_raw_prompt_is_tokenized_with_the_special_tokens() -> None:
+def test_a_prompt_without_a_system_message_is_tokenized_with_the_special_tokens() -> None:
     """A prompt that no template rendered still needs the special tokens."""
     model = FakeModel()
     model.tokenizer = BosTokenizer()

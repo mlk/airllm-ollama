@@ -27,7 +27,20 @@ class FakeTokenizer:
         """Return fake token ids for ``text``."""
         self.prompts.append(text)
         self.tokenizations.append(dict(kwargs))
-        return {"input_ids": list(TOKEN_IDS), "attention_mask": [1, 1, 1]}
+        ids = self.token_ids(text, **kwargs)
+        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+    def token_ids(self, text: str, **kwargs: object) -> list[int]:
+        """Return the token ids of ``text``.
+
+        Args:
+            text: The text to tokenize.
+            **kwargs: The options of the tokenization.
+
+        Returns:
+            The token ids of the text.
+        """
+        return list(TOKEN_IDS)
 
     def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:
         """Return a deterministic decoding of ``sequences``."""
@@ -63,15 +76,21 @@ class BosTokenizer(FakeTokenizer):
     BOS = 1
     BOS_TEXT = "<|begin_of_text|>"
 
-    def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
-        """Return the token ids of ``text`` with the BOS token of the text."""
-        self.prompts.append(text)
-        self.tokenizations.append(dict(kwargs))
+    def token_ids(self, text: str, **kwargs: object) -> list[int]:
+        """Return the token ids of ``text`` with the BOS token of the text.
+
+        Args:
+            text: The text to tokenize.
+            **kwargs: The options of the tokenization.
+
+        Returns:
+            The token ids of the text.
+        """
         ids = [self.BOS] * text.count(self.BOS_TEXT)
         if kwargs.get("add_special_tokens") is not False:
             ids.append(self.BOS)
         ids.extend(TOKEN_IDS)
-        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+        return ids
 
 
 class FakeModel:

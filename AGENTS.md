@@ -213,6 +213,9 @@ src/airllm_ollama/
 * A request with `raw: true` is sent unchanged, without the template. The
   template is otherwise only applied when a `system` message is present; Ollama
   applies it to every prompt. Tracked in #31.
+* A raw prompt is tokenized with the special tokens, so a client that rendered
+  the template itself (and sends the BOS token with it) gets a second one.
+  Tracked in #44 — do not work around it with a heuristic.
 * `keep_alive` unloads the model after the given idle time. Without it the model
   stays in memory, because reloading an AirLLM checkpoint is expensive. The
   default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` (e.g. `5m`).
