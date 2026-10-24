@@ -26,20 +26,19 @@ milestones (epics):
 1. **One ticket = one pull request.** Never commit directly to `main`.
 2. Branch naming: `feature/<issue-number>-<short-slug>` (e.g. `feature/2-airllm-engine`).
 3. Open the PR with `gh pr create`, referencing the issue (`Closes #<n>`).
-4. CI must be green before the PR is considered done.
+4. CI must be green before the PR is considered done (`gh pr checks <pr>
+   --watch`).
 5. Do not reformat or restructure unrelated code — keep diffs focused on the ticket.
-6. **Answer the automated review.** Every PR gets a `review` job (JetBrains
-   Junie, see `.junie/guidelines.md`). After opening the PR, wait for it to
-   finish (`gh pr checks <pr> --watch`), read the comment
-   (`gh pr view <pr> --json comments`) and deal with **every** suggestion:
+6. **Deal with every review comment.** Read the comments of the pull request
+   (`gh pr view <pr> --json comments`) and answer every one of them:
 
-   * implement it (commit on the same branch, push again),
+   * implement the suggestion (commit on the same branch, push again),
    * ignore it — then say why in a reply to the comment,
    * or, when it is valid but out of scope for this ticket, file a new issue
      (`gh issue create`) or extend an existing one and reference that issue in
      the reply.
 
-   A PR is not done before the reviewer has been answered. Do not leave a
+   A PR is not done before its comments are answered. Do not leave a
    suggestion unaddressed and unmentioned.
 
 ## Tooling
