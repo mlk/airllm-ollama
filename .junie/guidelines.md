@@ -4,7 +4,7 @@ You are reviewing a pull request for `airllm-ollama`, an Ollama-compatible REST 
 
 ## How to Post the Review
 
-**Post the whole review as a single comment on the pull request.** Do not use inline comments — the review is one comment with the sections below, so that the conversation stays readable and the next run updates the same comment instead of adding more.
+**Post the whole review as a single comment on the pull request.** Never use inline comments — not for a suggestion, and not for a word of praise. The review is one comment with the sections below, so that the conversation stays readable and the next run updates the same comment instead of adding more.
 
 Name the code element in the text of the comment when you refer to it (`engine._encode()`, `tests/test_chat.py`), so that the reader can find it.
 
