@@ -10,7 +10,7 @@ from airllm_ollama.config import DEFAULT_MODEL_NAME, Settings, get_settings
 def test_default_settings_are_applied() -> None:
     settings = Settings()
 
-    assert settings.app_name == "airllm-ollama-proxy"
+    assert settings.app_name == "airllm-ollama"
     assert settings.host == "127.0.0.1"
     assert settings.port == 8000
     assert settings.log_level == "INFO"

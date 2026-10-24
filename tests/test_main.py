@@ -24,22 +24,22 @@ def test_create_app_returns_fastapi_instance() -> None:
 
 
 def test_create_app_uses_provided_settings() -> None:
-    application = create_app(Settings(app_name="custom-proxy", version="9.9.9"))
+    application = create_app(Settings(app_name="custom-service", version="9.9.9"))
 
-    assert application.title == "custom-proxy"
+    assert application.title == "custom-service"
     assert application.version == "9.9.9"
 
 
 def test_create_app_defaults_to_process_settings() -> None:
     application = create_app()
 
-    assert application.title == "airllm-ollama-proxy"
+    assert application.title == "airllm-ollama"
     assert application.version == __version__
 
 
 def test_module_level_app_is_configured() -> None:
     assert isinstance(app, FastAPI)
-    assert app.title == "airllm-ollama-proxy"
+    assert app.title == "airllm-ollama"
 
 
 def test_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:

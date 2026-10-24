@@ -1,8 +1,8 @@
-# AirLLM Ollama API Wrapper (`airllm-ollama-proxy`)
+# AirLLM Ollama API Wrapper (`airllm-ollama`)
 
 ## Executive Summary
 
-The **AirLLM Ollama API Wrapper** is a lightweight, high-precision proxy service that exposes a standard [Ollama REST API](https://github.com/ollama/ollama) interface powered by **[AirLLM](https://github.com/lyzhang1999/AirLLM)** execution under the hood. 
+The **AirLLM Ollama API Wrapper** is a lightweight, high-precision service that exposes a standard [Ollama REST API](https://github.com/ollama/ollama) interface powered by **[AirLLM](https://github.com/lyzhang1999/AirLLM)** execution under the hood. 
 
 In microservice architectures or multi-agent AI pipelines, downstream applications often need to dynamically choose between **speed** (low latency, lower accuracy) and **capability/accuracy** (high parameter count, exact reasoning) on a per-request basis. By providing a transparent API surface compatible with standard Ollama client SDKs, this wrapper allows client applications to switch backends effortlessly—simply by toggling the target URL between a standard Ollama instance and this AirLLM wrapper—without changing any business logic or serialization code. The model name in the request has to be the one the target backend serves; `GET /api/tags` reports it.
 
@@ -146,6 +146,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `AIRLLM_OLLAMA_APP_NAME` | `airllm-ollama` | Name of the service (title of the OpenAPI schema) |
 | `AIRLLM_OLLAMA_HOST` | `127.0.0.1` | Server bind address |
 | `AIRLLM_OLLAMA_PORT` | `8000` | Server port |
 | `AIRLLM_OLLAMA_LOG_LEVEL` | `INFO` | Uvicorn log level |
@@ -156,6 +157,9 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 | `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
+
+A `.env` file overrides every one of these values. If yours still sets a
+variable that has a new default, remove the line to pick the default up again.
 
 ### API
 

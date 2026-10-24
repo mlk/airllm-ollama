@@ -30,7 +30,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "airllm-ollama-proxy"
+    app_name: str = "airllm-ollama"
     version: str = __version__
     host: str = "127.0.0.1"
     port: int = 8000
