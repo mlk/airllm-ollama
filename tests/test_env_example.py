@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import io
+import os
 import pathlib
 import re
-from typing import Any
+from unittest import mock
 
 import pytest
 from dotenv import dotenv_values
@@ -48,13 +49,13 @@ def _defaults() -> dict[str, object]:
 def _parse(name: str, value: str) -> object:
     """Build the setting from a value of the example file.
 
-    The value goes through the real settings class, so the validators and the
-    decoding of the settings apply.
+    The value goes through the environment of the settings, so the validators
+    and the decoding of the settings apply. The environment of the machine is
+    cleared, so only the value of the example file is read.
     """
-    # Every other setting is pinned to its default, so that the environment of
-    # the machine cannot influence the parsing.
-    kwargs: dict[str, Any] = {"_env_file": None, **_defaults(), name: value}
-    return getattr(Settings(**kwargs), name)
+    variable = f"{PREFIX}{name.upper()}"
+    with mock.patch.dict(os.environ, {variable: value}, clear=True):
+        return getattr(Settings(_env_file=None), name)
 
 
 def _name(key: str) -> str:
@@ -70,13 +71,14 @@ def _active_values(text: str) -> dict[str, str]:
     }
 
 
-def _commented_entries(text: str) -> list[tuple[str, str]]:
+def _commented_entries(text: str) -> list[tuple[str, str, bool]]:
     """Return the settings the given text mentions as a commented out line.
 
     A setting can be mentioned more than once, with several alternatives, so
-    every entry is returned.
+    every entry is returned. The flag tells whether the line is marked as an
+    alternative.
     """
-    entries: list[tuple[str, str]] = []
+    entries: list[tuple[str, str, bool]] = []
     for line in text.splitlines():
         stripped = line.strip()
         if COMMENTED_SETTING.match(stripped) is None:
@@ -84,13 +86,13 @@ def _commented_entries(text: str) -> list[tuple[str, str]]:
         parsed = dotenv_values(stream=io.StringIO(stripped.lstrip("#")), interpolate=False)
         for key, value in parsed.items():
             if key.lower().startswith(PREFIX):
-                entries.append((_name(key), value or ""))
+                entries.append((_name(key), value or "", stripped.endswith(ALTERNATIVE)))
     return entries
 
 
 def _commented_values(text: str) -> dict[str, str]:
     """Return the commented values, the last one of a setting wins."""
-    return dict(_commented_entries(text))
+    return {name: value for name, value, _ in _commented_entries(text)}
 
 
 def _documented_keys(text: str) -> set[str]:
@@ -119,7 +121,9 @@ def _mismatches(text: str) -> list[str]:
 def _invalid_values(text: str) -> list[str]:
     """Return the values of the example file that do not fit their setting."""
     invalid: list[str] = []
-    entries = list(_active_values(text).items()) + _commented_entries(text)
+    entries = list(_active_values(text).items()) + [
+        (name, value) for name, value, _ in _commented_entries(text)
+    ]
     for name, value in entries:
         if name not in Settings.model_fields:
             continue
@@ -133,14 +137,8 @@ def _invalid_values(text: str) -> list[str]:
 def _stale_commented_values(text: str) -> list[str]:
     """Return the commented values that show a default that is not the default."""
     stale: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        match = COMMENTED_SETTING.match(stripped)
-        if match is None or stripped.endswith(ALTERNATIVE):
-            continue
-        name = _name(match.group("key"))
-        value = _commented_values(line).get(name)
-        if value is None:
+    for name, value, alternative in _commented_entries(text):
+        if alternative:
             continue
         field = Settings.model_fields.get(name)
         if field is None:
@@ -194,10 +192,14 @@ def test_every_key_of_the_example_names_a_setting() -> None:
     assert unknown == [], f"unknown settings in .env.example: {unknown}"
 
 
+def _undocumented(text: str) -> list[str]:
+    """Return the settings that the example file does not mention."""
+    return sorted(set(_defaults()) - _documented_keys(text) - UNDOCUMENTED)
+
+
 def test_every_setting_is_documented_in_the_example() -> None:
     """A new setting has to be documented in the example file."""
-    text = ENV_EXAMPLE.read_text(encoding="utf-8")
-    undocumented = sorted(set(_defaults()) - _documented_keys(text) - UNDOCUMENTED)
+    undocumented = _undocumented(ENV_EXAMPLE.read_text(encoding="utf-8"))
 
     assert undocumented == [], f"settings missing in .env.example: {undocumented}"
 
@@ -250,7 +252,7 @@ def test_the_checks_report_a_missing_setting() -> None:
     """A setting that is not documented at all has to be reported."""
     text = "AIRLLM_OLLAMA_HOST=127.0.0.1\n"
 
-    assert "port" in set(_defaults()) - _documented_keys(text) - UNDOCUMENTED
+    assert "port" in _undocumented(text)
 
 
 def test_the_checks_catch_a_duplicate_setting() -> None:
