@@ -33,4 +33,4 @@ jobs:
             Review this pull request. Before reviewing, read AGENTS.md to understand the 
             project's architecture, conventions, quality gates, and environment quirks. 
             Follow the review guidelines in .junie/guidelines.md.
-          model: junie-free 
+          model: junie-lite 
