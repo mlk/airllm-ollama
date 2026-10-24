@@ -27,7 +27,7 @@ flowchart TD
     end
 
     subgraph repo["airllm-ollama (this repository)"]
-        api["Ollama-compatible API<br/>/api/generate · /api/chat"]
+        api["Ollama-compatible API<br/>/api/tags · /api/generate · /api/chat"]
         engine["AirLLM Engine<br/>layer-wise inference"]
         api --> engine
     end
@@ -38,9 +38,10 @@ flowchart TD
 
 **The routing is not part of this service.** The client application decides per
 request whether a prompt needs the speed of a standard Ollama node or the
-accuracy of a large model served by AirLLM. This repository provides the right
-hand side of that decision — an Ollama-compatible API in front of an AirLLM
-engine — so a client only has to change the base URL to switch backends.
+accuracy of a large model served by AirLLM. This repository provides the
+"High Accuracy / Complex" branch of that decision — an Ollama-compatible API in
+front of an AirLLM engine — so a client only has to change the base URL to
+switch backends.
 
 ---
 
