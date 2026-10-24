@@ -33,7 +33,7 @@ def check_service(base_url: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[Ch
     """Query the endpoints of a running service and report their state.
 
     Args:
-        base_url: Base URL of the service, e.g. ``http://127.0.0.1:11434``.
+        base_url: Base URL of the service, e.g. ``http://127.0.0.1:8000``.
         timeout: Timeout of a single request in seconds.
 
     Returns:
