@@ -108,13 +108,49 @@ def test_api_generate_forwards_the_options(service: TestClient, factory: FakeFac
     assert kwargs["do_sample"] is True
 
 
-def test_api_generate_prefixes_the_system_prompt(service: TestClient, factory: FakeFactory) -> None:
+def test_api_generate_renders_the_system_prompt_with_the_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
     service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == [f"Be terse.\n\n{PROMPT}"]
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [
+        [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": PROMPT},
+        ]
+    ]
+
+
+def test_api_generate_ignores_the_system_message_of_a_raw_request(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """`raw` asks for the prompt without the template."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse.", "raw": True},
+    )
+
+    assert factory.model.tokenizer.prompts == [PROMPT]
+    assert factory.model.tokenizer.renderings == []
+
+
+def test_api_generate_falls_back_to_the_transcript_without_a_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    service.post(
+        "/api/generate",
+        json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert factory.model.tokenizer.prompts == [f"System: Be terse.\n\nUser: {PROMPT}\n\nAssistant:"]
 
 
 def test_api_generate_cuts_at_a_stop_sequence(service: TestClient, factory: FakeFactory) -> None:
@@ -183,6 +219,19 @@ def test_the_version_endpoint_reports_the_version(service: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"version": get_settings().version}
+
+
+def test_a_wrong_model_is_rejected_before_the_model_is_loaded(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A wrong model must not load the checkpoint."""
+    response = service.post(
+        "/api/generate",
+        json={"model": "other-model", "prompt": PROMPT, "system": "Be terse."},
+    )
+
+    assert response.status_code == 404
+    assert factory.calls == []
 
 
 def test_an_unknown_model_is_answered_with_404(service: TestClient) -> None:
@@ -276,6 +325,35 @@ def test_a_stream_rejects_an_unknown_model(service: TestClient) -> None:
 
     assert response.status_code == 404
     assert "error" in response.json()
+
+
+def test_a_stream_renders_the_system_prompt_with_the_chat_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A streamed generation must not lose the system message."""
+    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.chunks = ["blue ", "sky"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "system": "Be terse.",
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events[:-1]) == "blue sky"
+    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
+    assert factory.model.tokenizer.renderings == [
+        [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": PROMPT},
+        ]
+    ]
 
 
 def test_a_backend_without_streaming_delivers_the_whole_answer(

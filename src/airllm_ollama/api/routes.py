@@ -66,14 +66,16 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
     ``done`` set to ``true``.
     """
     engine = get_engine()
-    prompt = _build_prompt(request.prompt, request.system)
     options = map_options(request.options)
+    # `raw` asks for the prompt without the template, like Ollama does.
+    system = None if request.raw else request.system
     if request.stream:
         engine.prepare(request.model)
         return _stream_response(
             generate_events(
                 engine,
-                prompt,
+                request.prompt,
+                system=system,
                 model=request.model,
                 options=options,
                 stop=request.options.stop if request.options else None,
@@ -81,7 +83,7 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
             engine,
             request.keep_alive,
         )
-    result = engine.generate_result(prompt, model=request.model, **options)
+    result = engine.generate_result(request.prompt, system=system, model=request.model, **options)
     text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
 
     settings = get_settings()
@@ -104,13 +106,6 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
         eval_count=result.generated_tokens,
         eval_duration=result.eval_duration_ns,
     )
-
-
-def _build_prompt(prompt: str, system: str | None) -> str:
-    """Prefix the prompt with the system message, the way Ollama does."""
-    if not system:
-        return prompt
-    return f"{system}\n\n{prompt}"
 
 
 def _stream_response(

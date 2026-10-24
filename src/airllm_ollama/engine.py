@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from airllm_ollama.chat import ChatTurn, render_chat
+from airllm_ollama.chat import ChatTurn, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
 from airllm_ollama.streaming import TextStreamer
@@ -358,11 +358,20 @@ class AirLLMEngine:
         self.ensure_model_allowed(model)
         self.load()
 
-    def generate(self, prompt: str, *, model: str | None = None, **kwargs: object) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        system: str | None = None,
+        **kwargs: object,
+    ) -> str:
         """Generate text for ``prompt``.
 
         Args:
             prompt: The prompt to complete.
+            system: An optional system message. It is rendered with the chat
+                template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
@@ -374,15 +383,22 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self.generate_result(prompt, model=model, **kwargs).text
+        return self._generate(prompt, system, model=model, **kwargs).text
 
     def generate_result(
-        self, prompt: str, *, model: str | None = None, **kwargs: object
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        system: str | None = None,
+        **kwargs: object,
     ) -> GenerationResult:
         """Generate text for ``prompt`` and report the generation statistics.
 
         Args:
             prompt: The prompt to complete.
+            system: An optional system message. It is rendered with the chat
+                template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
@@ -394,12 +410,25 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
+        return self._generate(prompt, system, model=model, **kwargs)
+
+    def _generate(
+        self,
+        prompt: str,
+        system: str | None,
+        /,
+        *,
+        model: str | None = None,
+        **kwargs: object,
+    ) -> GenerationResult:
+        """Validate the model, load it, render the prompt and generate."""
         self.ensure_model_allowed(model)
         self.cancel_scheduled_unload()
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            return self._run_prompt(loaded_model, prompt, started, **kwargs)
+            rendered = render_completion(loaded_model.tokenizer, prompt, system)
+            return self._run_prompt(loaded_model, rendered, started, **kwargs)
 
     def generate_chat(
         self,
@@ -463,6 +492,7 @@ class AirLLMEngine:
         prompt: str,
         *,
         model: str | None = None,
+        system: str | None = None,
         **kwargs: object,
     ) -> Iterator[StreamChunk]:
         """Generate text, yielding the chunks as they are produced.
@@ -473,6 +503,8 @@ class AirLLMEngine:
 
         Args:
             prompt: The prompt to complete.
+            system: An optional system message. It is rendered with the chat
+                template of the model, the same way ``/api/chat`` renders it.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
@@ -489,7 +521,8 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            yield from self._stream(loaded_model, prompt, started, **kwargs)
+            rendered = render_completion(loaded_model.tokenizer, prompt, system)
+            yield from self._stream(loaded_model, rendered, started, **kwargs)
 
     def generate_chat_stream(
         self,

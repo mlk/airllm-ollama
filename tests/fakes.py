@@ -20,6 +20,7 @@ class FakeTokenizer:
         self.prompts: list[str] = []
         self.decoded: list[object] = []
         self.template = template
+        self.renderings: list[list[dict[str, str]]] = []
 
     def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
         """Return fake token ids for ``text``."""
@@ -35,6 +36,17 @@ class FakeTokenizer:
         """Render the messages with the chat template of the tokenizer."""
         if self.template is None:
             raise ValueError("this model has no chat template")
+        if isinstance(messages, list):
+            self.renderings.append(
+                [
+                    {
+                        "role": str(message.get("role", "")),
+                        "content": str(message.get("content", "")),
+                    }
+                    for message in messages
+                    if isinstance(message, dict)
+                ]
+            )
         return self.template
 
 

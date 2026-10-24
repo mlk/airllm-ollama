@@ -64,7 +64,7 @@ def test_generate_returns_the_ollama_response_shape(client: TestClient, engine: 
 def test_generate_delegates_to_the_engine(client: TestClient, engine: Any) -> None:
     client.post("/api/generate", json={"model": MODEL, "prompt": "hello"})
 
-    engine.return_value.generate_result.assert_called_once_with("hello", model=MODEL)
+    engine.return_value.generate_result.assert_called_once_with("hello", system=None, model=MODEL)
 
 
 def test_generate_maps_ollama_options(client: TestClient, engine: Any) -> None:
@@ -102,14 +102,14 @@ def test_generate_without_options_does_not_sample(client: TestClient, engine: An
     assert "do_sample" not in kwargs
 
 
-def test_generate_prefixes_the_system_prompt(client: TestClient, engine: Any) -> None:
+def test_generate_renders_the_system_prompt(client: TestClient, engine: Any) -> None:
     client.post(
         "/api/generate",
         json={"model": MODEL, "prompt": "hello", "system": "You are helpful."},
     )
 
     engine.return_value.generate_result.assert_called_once_with(
-        "You are helpful.\n\nhello", model=MODEL
+        "hello", system="You are helpful.", model=MODEL
     )
 
 
