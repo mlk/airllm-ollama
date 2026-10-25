@@ -42,6 +42,14 @@ NOT_IMPLEMENTED_RESPONSE: dict[int | str, dict[str, Any]] = {
     }
 }
 
+# The errors the generation endpoints can answer with, documented in the
+# OpenAPI schema.
+GENERATION_ERRORS: dict[int | str, dict[str, Any]] = {
+    400: {"model": ErrorBody, "description": "The request body is invalid."},
+    404: {"model": ErrorBody, "description": "The model is not the one this service serves."},
+    503: {"model": ErrorBody, "description": "The model could not be loaded."},
+}
+
 
 @api_router.get("/health", response_model=HealthResponse, tags=["health"])
 async def health() -> HealthResponse:
@@ -71,7 +79,12 @@ async def version() -> VersionResponse:
     return VersionResponse(version=get_settings().version)
 
 
-@api_router.post("/api/generate", response_model=GenerateResponse, tags=["ollama"])
+@api_router.post(
+    "/api/generate",
+    response_model=GenerateResponse,
+    responses=GENERATION_ERRORS,
+    tags=["ollama"],
+)
 async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResponse:
     """Generate a completion, as ``POST /api/generate`` does in Ollama.
 
@@ -134,7 +147,12 @@ def _stream_response(
     return StreamingResponse(events, media_type=media_type())
 
 
-@api_router.post("/api/chat", response_model=ChatResponse, tags=["ollama"])
+@api_router.post(
+    "/api/chat",
+    response_model=ChatResponse,
+    responses=GENERATION_ERRORS,
+    tags=["ollama"],
+)
 async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     """Answer a chat, as ``POST /api/chat`` does in Ollama.
 

@@ -76,3 +76,17 @@ def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "models" in response.json()
+
+
+@pytest.mark.parametrize("path", ["/api/generate", "/api/chat"])
+def test_the_errors_of_the_generation_endpoints_are_documented(
+    client: TestClient, path: str
+) -> None:
+    """The errors of the generation endpoints are part of the OpenAPI schema."""
+    schema = client.get("/openapi.json").json()
+
+    responses = schema["paths"][path]["post"]["responses"]
+    assert set(responses) >= {"400", "404", "503"}
+    for status in ("400", "404", "503"):
+        reference = responses[status]["content"]["application/json"]["schema"]["$ref"]
+        assert reference == "#/components/schemas/ErrorBody"
