@@ -308,15 +308,26 @@ src/airllm_ollama/
 * The model id may contain a slash (a Hugging Face repository id), so the route
   uses the `:path` converter. A tag (`name:latest`) resolves to the served
   model, like in Ollama — `engine.model_names_match()` does the check.
+* `POST /v1/chat/completions` (issue #22) answers a chat: the messages are
+  rendered with the chat template of the model, the same way `/api/chat` does
+  it. `temperature`, `max_tokens` and `stop` are translated with
+  `options.map_options()`; unknown parameters are ignored, so a client that
+  sends the full option set keeps working.
+* A streamed answer is a stream of Server-Sent Events (`text/event-stream`),
+  one `data:` event per chunk, the last one `data: [DONE]`. The stream always
+  ends with the last chunk (with the `finish_reason`), also when a stop
+  sequence was found, and it releases the tail that the stop filter held back
+  before it.
+* The generation of the non-streaming answer runs in a thread
+  (`starlette.concurrency.run_in_threadpool`): a generation takes minutes, and
+  it must not block the event loop of the service.
 * The errors of these routes are answered in the **OpenAI** format
   (`{"error": {"message": ..., "type": ..., "param": ..., "code": ...}}`), not
   in the Ollama one: `api.openai.OpenAIError` carries the payload and
   `api.openai.openai_error_handler` renders it. The exception handler is
-  registered in `create_app()`.
-* The validation errors of the `/api/*` routes keep the Ollama format
-  (`{"error": "..."}`) — the `/v1/*` routes have no request body, so they
-  cannot raise one. The completion endpoints (#22, #23) have to decide whether
-  they use the Ollama or the OpenAI format for a malformed body.
+  registered in `create_app()`. The validation errors follow the format of the
+  route: `api.errors.validation_error_handler` answers the `/v1/*` routes in
+  the OpenAI format and the `/api/*` routes in the Ollama one.
 
 ## Data usage policy (important)
 
