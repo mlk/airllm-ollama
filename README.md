@@ -177,6 +177,7 @@ so that the official OpenAI client can be pointed at this service.
 | `POST` | `/api/chat` | Chat completion, as in Ollama (streaming and non-streaming) |
 | `GET` | `/v1/models` | The served model, in the OpenAI format |
 | `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
+| `POST` | `/v1/chat/completions` | Chat completion, in the OpenAI format (streaming and non-streaming) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -386,6 +387,43 @@ the OpenAI error format:
   }
 }
 ```
+
+`POST /v1/chat/completions` answers a chat. The messages are rendered with
+the **chat template of the model**, the same way `/api/chat` does it:
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "messages": [{"role": "user", "content": "Why is the sky blue?"}]
+      }'
+```
+
+```json
+{
+  "id": "chatcmpl-airllm-d49967a00103",
+  "object": "chat.completion",
+  "created": 1792898625,
+  "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "Rayleigh scattering."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 15, "completion_tokens": 4, "total_tokens": 19}
+}
+```
+
+With `"stream": true` the answer is a stream of Server-Sent Events, the way
+the OpenAI API streams it — one `data:` event per chunk, the last one being
+`data: [DONE]`.
+
+Besides `model` and `messages`, the endpoint accepts `temperature`,
+`max_tokens` and `stop` (a string or a list of strings). Unknown parameters
+are ignored, so a client that sends the full option set keeps working.
 
 ### Verifying a running instance
 
