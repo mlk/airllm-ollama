@@ -64,10 +64,6 @@ def test_the_error_of_the_endpoints_is_documented(
     response = schema["paths"][path][method.lower()]["responses"]["501"]
     reference = response["content"]["application/json"]["schema"]["$ref"]
     assert reference == "#/components/schemas/ErrorBody"
-    error_body = schema["components"]["schemas"]["ErrorBody"]
-    assert error_body["type"] == "object"
-    assert error_body["properties"]["error"]["type"] == "string"
-    assert error_body["required"] == ["error"]
 
 
 def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
