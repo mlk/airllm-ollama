@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
 from airllm_ollama.config import get_settings
@@ -27,6 +27,10 @@ from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
 from airllm_ollama.schemas.version import VersionResponse
 
 api_router = APIRouter()
+
+# The model management endpoints of Ollama are not implemented: this service
+# serves a single, pre-configured model.
+NOT_IMPLEMENTED = 501
 
 
 @api_router.get("/health", response_model=HealthResponse, tags=["health"])
@@ -193,4 +197,75 @@ async def tags() -> TagsResponse:
                 ),
             )
         ]
+    )
+
+
+@api_router.post("/api/pull", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+async def pull() -> JSONResponse:
+    """Pull a model, as ``POST /api/pull`` does in Ollama.
+
+    This service serves a single, pre-configured model — it cannot pull
+    models. The endpoint exists so that a client gets a clear answer instead
+    of a "not found".
+    """
+    return _not_implemented("pull")
+
+
+@api_router.post("/api/push", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+async def push() -> JSONResponse:
+    """Push a model, as ``POST /api/push`` does in Ollama.
+
+    This service serves a single, pre-configured model — it cannot push
+    models.
+    """
+    return _not_implemented("push")
+
+
+@api_router.post("/api/create", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+async def create() -> JSONResponse:
+    """Create a model, as ``POST /api/create`` does in Ollama.
+
+    This service serves a single, pre-configured model — it cannot create
+    models.
+    """
+    return _not_implemented("create")
+
+
+@api_router.post("/api/copy", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+async def copy() -> JSONResponse:
+    """Copy a model, as ``POST /api/copy`` does in Ollama.
+
+    This service serves a single, pre-configured model — it cannot copy
+    models.
+    """
+    return _not_implemented("copy")
+
+
+@api_router.delete("/api/delete", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+async def delete() -> JSONResponse:
+    """Delete a model, as ``DELETE /api/delete`` does in Ollama.
+
+    This service serves a single, pre-configured model — it cannot delete
+    models.
+    """
+    return _not_implemented("delete")
+
+
+def _not_implemented(action: str) -> JSONResponse:
+    """Return the answer of a model management endpoint this service lacks.
+
+    Args:
+        action: The action of the endpoint, e.g. ``pull``.
+
+    Returns:
+        The answer with the status code ``501``.
+    """
+    return JSONResponse(
+        status_code=NOT_IMPLEMENTED,
+        content={
+            "error": (
+                "This service serves a single, pre-configured model "
+                f"(AIRLLM_OLLAMA_MODEL_NAME); it cannot {action} models."
+            )
+        },
     )
