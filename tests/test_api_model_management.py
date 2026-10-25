@@ -54,11 +54,14 @@ def test_the_model_management_endpoints_are_documented(client: TestClient) -> No
     assert "501" in paths["/api/pull"]["post"]["responses"]
 
 
-def test_the_error_of_the_endpoints_is_documented(client: TestClient) -> None:
+@pytest.mark.parametrize(("method", "path"), MODEL_ENDPOINTS)
+def test_the_error_of_the_endpoints_is_documented(
+    client: TestClient, method: str, path: str
+) -> None:
     """The shape of the error is part of the OpenAPI schema."""
     schema = client.get("/openapi.json").json()
 
-    response = schema["paths"]["/api/pull"]["post"]["responses"]["501"]
+    response = schema["paths"][path][method.lower()]["responses"]["501"]
     reference = response["content"]["application/json"]["schema"]["$ref"]
     assert reference == "#/components/schemas/ErrorBody"
     error_body = schema["components"]["schemas"]["ErrorBody"]
