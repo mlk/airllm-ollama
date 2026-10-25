@@ -6,6 +6,7 @@ clients can talk to this service unchanged.
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -23,6 +24,7 @@ from airllm_ollama.options import done_reason as generation_done_reason
 from airllm_ollama.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from airllm_ollama.schemas.generate import GenerateRequest, GenerateResponse
 from airllm_ollama.schemas.health import HealthResponse
+from airllm_ollama.schemas.ollama import ErrorBody
 from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
 from airllm_ollama.schemas.version import VersionResponse
 
@@ -31,6 +33,22 @@ api_router = APIRouter()
 # The model management endpoints of Ollama are not implemented: this service
 # serves a single, pre-configured model.
 NOT_IMPLEMENTED = 501
+
+# The answer of those endpoints, documented in the OpenAPI schema.
+NOT_IMPLEMENTED_RESPONSE: dict[int | str, dict[str, Any]] = {
+    NOT_IMPLEMENTED: {
+        "model": ErrorBody,
+        "description": "This service does not implement the endpoint.",
+    }
+}
+
+# The errors the generation endpoints can answer with, documented in the
+# OpenAPI schema.
+GENERATION_ERRORS: dict[int | str, dict[str, Any]] = {
+    400: {"model": ErrorBody, "description": "The request body is invalid."},
+    404: {"model": ErrorBody, "description": "The model is not the one this service serves."},
+    503: {"model": ErrorBody, "description": "The model could not be loaded."},
+}
 
 
 @api_router.get("/health", response_model=HealthResponse, tags=["health"])
@@ -61,7 +79,12 @@ async def version() -> VersionResponse:
     return VersionResponse(version=get_settings().version)
 
 
-@api_router.post("/api/generate", response_model=GenerateResponse, tags=["ollama"])
+@api_router.post(
+    "/api/generate",
+    response_model=GenerateResponse,
+    responses=GENERATION_ERRORS,
+    tags=["ollama"],
+)
 async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResponse:
     """Generate a completion, as ``POST /api/generate`` does in Ollama.
 
@@ -124,7 +147,12 @@ def _stream_response(
     return StreamingResponse(events, media_type=media_type())
 
 
-@api_router.post("/api/chat", response_model=ChatResponse, tags=["ollama"])
+@api_router.post(
+    "/api/chat",
+    response_model=ChatResponse,
+    responses=GENERATION_ERRORS,
+    tags=["ollama"],
+)
 async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     """Answer a chat, as ``POST /api/chat`` does in Ollama.
 
@@ -200,7 +228,12 @@ async def tags() -> TagsResponse:
     )
 
 
-@api_router.post("/api/pull", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+@api_router.post(
+    "/api/pull",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
 async def pull() -> JSONResponse:
     """Pull a model, as ``POST /api/pull`` does in Ollama.
 
@@ -211,7 +244,12 @@ async def pull() -> JSONResponse:
     return _not_implemented("pull")
 
 
-@api_router.post("/api/push", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+@api_router.post(
+    "/api/push",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
 async def push() -> JSONResponse:
     """Push a model, as ``POST /api/push`` does in Ollama.
 
@@ -221,7 +259,12 @@ async def push() -> JSONResponse:
     return _not_implemented("push")
 
 
-@api_router.post("/api/create", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+@api_router.post(
+    "/api/create",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
 async def create() -> JSONResponse:
     """Create a model, as ``POST /api/create`` does in Ollama.
 
@@ -231,7 +274,12 @@ async def create() -> JSONResponse:
     return _not_implemented("create")
 
 
-@api_router.post("/api/copy", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+@api_router.post(
+    "/api/copy",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
 async def copy() -> JSONResponse:
     """Copy a model, as ``POST /api/copy`` does in Ollama.
 
@@ -241,7 +289,12 @@ async def copy() -> JSONResponse:
     return _not_implemented("copy")
 
 
-@api_router.delete("/api/delete", status_code=NOT_IMPLEMENTED, tags=["ollama"])
+@api_router.delete(
+    "/api/delete",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
 async def delete() -> JSONResponse:
     """Delete a model, as ``DELETE /api/delete`` does in Ollama.
 
