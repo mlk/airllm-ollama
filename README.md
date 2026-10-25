@@ -421,9 +421,10 @@ With `"stream": true` the answer is a stream of Server-Sent Events, the way
 the OpenAI API streams it — one `data:` event per chunk, the last one being
 `data: [DONE]`.
 
-Besides `model` and `messages`, the endpoint accepts `temperature`,
-`max_tokens` and `stop` (a string or a list of strings). Unknown parameters
-are ignored, so a client that sends the full option set keeps working.
+Besides `model` and `messages`, the endpoint accepts `temperature`, `top_p`,
+`max_tokens` (or its newer name `max_completion_tokens`), and `stop` (a string
+or a list of strings). Unknown parameters are ignored, so a client that sends
+the full option set keeps working.
 
 ### Verifying a running instance
 
