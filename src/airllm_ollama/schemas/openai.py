@@ -54,6 +54,9 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
     temperature: float | None = None
     max_tokens: int | None = None
+    # The newer name of `max_tokens`; the OpenAI SDK sends it for the models
+    # that do not count the reasoning tokens.
+    max_completion_tokens: int | None = None
     stop: str | list[str] | None = None
     stream: bool = False
 

@@ -177,7 +177,7 @@ async def chat_completions(
     options = map_options(
         GenerateOptions(
             temperature=request.temperature,
-            num_predict=request.max_tokens,
+            num_predict=_max_tokens(request),
             stop=stop,
         )
     )
@@ -372,3 +372,21 @@ def _stop_sequences(stop: str | list[str] | None) -> list[str]:
     if isinstance(stop, str):
         return [stop]
     return [sequence for sequence in stop if sequence]
+
+
+def _max_tokens(request: ChatCompletionRequest) -> int | None:
+    """Return the number of tokens the client asked for.
+
+    The newer OpenAI clients send ``max_completion_tokens`` instead of
+    ``max_tokens``; the newer name wins when both are sent.
+
+    Args:
+        request: The request of the client.
+
+    Returns:
+        The number of tokens, or ``None`` when the client did not ask for a
+        limit.
+    """
+    if request.max_completion_tokens is not None:
+        return request.max_completion_tokens
+    return request.max_tokens

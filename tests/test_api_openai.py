@@ -394,3 +394,16 @@ def test_the_model_stays_loaded_without_a_keep_alive(
     client.post("/v1/chat/completions", json={"model": model, "messages": MESSAGES})
 
     engine.return_value.schedule_unload.assert_not_called()
+
+
+def test_chat_completions_accepts_the_newer_max_tokens_name(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The newer OpenAI clients send `max_completion_tokens`."""
+    client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": MESSAGES, "max_completion_tokens": 24},
+    )
+
+    _, kwargs = engine.return_value.generate_chat.call_args
+    assert kwargs["max_new_tokens"] == 24
