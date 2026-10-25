@@ -1,0 +1,62 @@
+"""Tests for the model management endpoints of the Ollama API.
+
+The service serves a single, pre-configured model, so the endpoints that would
+manage a model registry answer with "not implemented" instead of "not found".
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+# The endpoints of Ollama that manage models, with the method they use.
+MODEL_ENDPOINTS = [
+    ("post", "/api/pull"),
+    ("post", "/api/push"),
+    ("post", "/api/create"),
+    ("post", "/api/copy"),
+    ("delete", "/api/delete"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), MODEL_ENDPOINTS)
+def test_a_model_management_endpoint_is_not_implemented(
+    client: TestClient, method: str, path: str
+) -> None:
+    """The endpoints exist and answer with a clear error."""
+    response = client.request(method.upper(), path, json={"model": "some-model"})
+
+    assert response.status_code == 501
+    assert "error" in response.json()
+
+
+@pytest.mark.parametrize(("method", "path"), MODEL_ENDPOINTS)
+def test_a_model_management_endpoint_explains_itself(
+    client: TestClient, method: str, path: str
+) -> None:
+    """The error names the model the service serves."""
+    response = client.request(method.upper(), path, json={"model": "some-model"})
+
+    error = response.json()["error"]
+    assert "single" in error
+    assert "AIRLLM_OLLAMA_MODEL_NAME" in error
+
+
+def test_the_model_management_endpoints_are_documented(client: TestClient) -> None:
+    """The endpoints are part of the OpenAPI schema."""
+    paths = client.get("/openapi.json").json()["paths"]
+
+    assert "/api/pull" in paths
+    assert "/api/push" in paths
+    assert "/api/create" in paths
+    assert "/api/copy" in paths
+    assert "/api/delete" in paths
+    assert "501" in paths["/api/pull"]["post"]["responses"]
+
+
+def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
+    """The stubs do not disturb the endpoints that work."""
+    response = client.get("/api/tags")
+
+    assert response.status_code == 200
+    assert "models" in response.json()

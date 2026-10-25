@@ -135,6 +135,8 @@ src/airllm_ollama/
 | `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
 | `POST` | `/api/generate` | `GenerateResponse` — Ollama's non-streaming generate shape |
 | `POST` | `/api/chat` | `ChatResponse` — Ollama's non-streaming chat shape |
+| `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy` | `501` — Ollama's model management, not implemented |
+| `DELETE` | `/api/delete` | `501` — Ollama's model management, not implemented |
 
 * The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
   real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
@@ -150,6 +152,11 @@ src/airllm_ollama/
   `clear_metadata_cache()` after the checkpoint on disk changed.
 * `capabilities` is currently hardcoded to `["completion"]` — extend it when
   the chat/embedding endpoints land (issues #4/#5).
+* The model management endpoints of Ollama (`/api/pull`, `/api/push`,
+  `/api/create`, `/api/copy`, `/api/delete`) are exposed, but they always
+  answer `501` with the Ollama error format: this service serves a single,
+  pre-configured model and has no registry. A client gets a clear answer
+  instead of a "not found".
 
 ### Engine (issue #2, done)
 
