@@ -20,7 +20,12 @@ from starlette.concurrency import run_in_threadpool
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import AirLLMEngine, get_engine, model_names_match
 from airllm_ollama.model_metadata import collect_metadata
-from airllm_ollama.options import StopSequenceFilter, apply_stop_sequences, map_options
+from airllm_ollama.options import (
+    StopSequenceFilter,
+    apply_stop_sequences,
+    map_options,
+    parse_keep_alive,
+)
 from airllm_ollama.options import done_reason as generation_done_reason
 from airllm_ollama.schemas.generate import GenerateOptions
 from airllm_ollama.schemas.openai import (
@@ -177,15 +182,20 @@ async def chat_completions(
         )
     )
     messages = [(message.role, message.content) for message in request.messages]
+    engine = get_engine()
+    keep_alive = parse_keep_alive(settings.keep_alive)
     if request.stream:
+        # The model is loaded before the headers are sent: a broken checkpoint
+        # becomes a 503 instead of a truncated stream.
+        await run_in_threadpool(engine.prepare, request.model)
         return StreamingResponse(
-            _chat_events(get_engine(), messages, request.model, options, stop),
+            _chat_events(engine, messages, request.model, options, stop, keep_alive),
             media_type=SSE_MEDIA_TYPE,
         )
-    result = await run_in_threadpool(
-        get_engine().generate_chat, messages, model=request.model, **options
-    )
+    result = await run_in_threadpool(engine.generate_chat, messages, model=request.model, **options)
     text = apply_stop_sequences(result.text, stop)
+    if keep_alive is not None:
+        engine.schedule_unload(keep_alive)
     return ChatCompletion(
         id=_completion_id(),
         created=int(time.time()),
@@ -211,8 +221,37 @@ def _chat_events(
     model: str,
     options: dict[str, object],
     stop: list[str],
+    keep_alive: float | None = None,
 ) -> Iterator[str]:
     """Yield the Server-Sent Events of a chat completion.
+
+    Args:
+        engine: The engine that runs the generation.
+        messages: The chat history as ``(role, content)`` pairs.
+        model: The model the client asked for.
+        options: The translated generation options.
+        stop: The stop sequences requested by the client.
+        keep_alive: The lifetime of the loaded model, if one is configured.
+
+    Yields:
+        The events of the stream, the last one being ``[DONE]``.
+    """
+    try:
+        yield from _completion_events(engine, messages, model, options, stop)
+    finally:
+        if keep_alive is not None:
+            # The model stays loaded for the configured idle time.
+            engine.schedule_unload(keep_alive)
+
+
+def _completion_events(
+    engine: AirLLMEngine,
+    messages: list[tuple[str, str]],
+    model: str,
+    options: dict[str, object],
+    stop: list[str],
+) -> Iterator[str]:
+    """Yield the Server-Sent Events of the answer of the model.
 
     Args:
         engine: The engine that runs the generation.

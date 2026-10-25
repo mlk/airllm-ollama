@@ -11,6 +11,7 @@ from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import GenerationResult, StreamChunk
+from airllm_ollama.exceptions import ModelInitializationError
 
 MODEL = "test-model"
 MESSAGES = [{"role": "user", "content": "why is the sky blue?"}]
@@ -357,3 +358,39 @@ def test_a_stream_without_statistics_still_ends(
 
     events = [line for line in response.text.splitlines() if line]
     assert events[-1] == "data: [DONE]"
+
+
+def test_a_stream_loads_the_model_before_the_headers_are_sent(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """A broken checkpoint becomes a 503, not a truncated stream."""
+    engine.return_value.prepare.side_effect = ModelInitializationError("cannot load the model")
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": MESSAGES, "stream": True},
+    )
+
+    assert response.status_code == 503
+    assert "error" in response.json()
+
+
+def test_the_model_is_unloaded_after_the_configured_idle_time(
+    client: TestClient, model: str, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keep alive setting is honoured, like in the Ollama routes."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "5m")
+    get_settings.cache_clear()
+
+    client.post("/v1/chat/completions", json={"model": model, "messages": MESSAGES})
+
+    engine.return_value.schedule_unload.assert_called_once_with(300.0)
+
+
+def test_the_model_stays_loaded_without_a_keep_alive(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """Without a lifetime the model stays in memory."""
+    client.post("/v1/chat/completions", json={"model": model, "messages": MESSAGES})
+
+    engine.return_value.schedule_unload.assert_not_called()
