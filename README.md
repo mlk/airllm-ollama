@@ -164,7 +164,8 @@ variable that has a new default, remove the line to pick the default up again.
 ### API
 
 The `/api/*` routes mirror Ollama's REST interface, so standard Ollama clients
-work against this service unchanged.
+work against this service unchanged. The `/v1/*` routes mirror the OpenAI API,
+so that the official OpenAI client can be pointed at this service.
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -174,6 +175,8 @@ work against this service unchanged.
 | `GET` | `/api/tags` | The single served model with its metadata, as in Ollama |
 | `POST` | `/api/generate` | Completion, as in Ollama (streaming and non-streaming) |
 | `POST` | `/api/chat` | Chat completion, as in Ollama (streaming and non-streaming) |
+| `GET` | `/v1/models` | The served model, in the OpenAI format |
+| `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -335,6 +338,54 @@ is not tokenized twice, that count is one **lower** than it was before the
 double BOS token was removed — the number is the correct one now.
 
 `options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
+
+### The OpenAI API
+
+The `/v1/*` routes mirror the OpenAI API, so that the official client can be
+pointed at this service:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
+print(client.models.list())
+```
+
+`GET /v1/models` answers with the single model the service serves:
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+      "object": "model",
+      "created": 1792896781,
+      "owned_by": "airllm"
+    }
+  ]
+}
+```
+
+`GET /v1/models/{model_id}` answers with that model alone. A model id may
+contain a slash (a Hugging Face repository id) and a tag (`name:latest`
+resolves to the served model, like in Ollama). Another model is answered with
+the OpenAI error format:
+
+```json
+{
+  "error": {
+    "message": "The model 'other-model' does not exist",
+    "type": "invalid_request_error",
+    "param": "model",
+    "code": "model_not_found"
+  }
+}
+```
 
 ### Verifying a running instance
 
