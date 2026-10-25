@@ -251,6 +251,11 @@ src/airllm_ollama/
   holds back the tail that could still become a stop sequence, so a stop
   sequence spanning two chunks is detected as well. The generation itself is
   not stopped early yet (issue #15).
+* A stop sequence does not end the stream: the generation continues and the
+  client still gets the last event, with the statistics of the generation —
+  the same numbers the non-streaming answer reports. Only the text after the
+  stop sequence is dropped. The filter releases the tail it held back when the
+  generation is over.
 * `engine.prepare()` validates the model and loads it *before* the response
   headers are sent, so that a broken checkpoint becomes a 503 instead of a
   truncated stream.

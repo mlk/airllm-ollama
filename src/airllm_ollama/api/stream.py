@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import AirLLMEngine, StreamChunk
+from airllm_ollama.engine import AirLLMEngine, GenerationResult
 from airllm_ollama.options import StopSequenceFilter, done_reason
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
@@ -75,18 +75,23 @@ def generate_events(
     created_at = _now()
     stream_format = configured_format()
     stop_filter = StopSequenceFilter(stop)
+    result: GenerationResult | None = None
     for chunk in engine.generate_stream(prompt, system=system, raw=raw, model=model, **options):
         if chunk.result is not None:
-            yield format_event(_final_payload(model, created_at, chunk, options), stream_format)
-            return
+            result = chunk.result
+            break
         text = stop_filter.feed(chunk.text)
         if text:
             yield format_event(_partial_payload(model, created_at, text), stream_format)
-        if stop_filter.stopped:
-            return
+        # A stop sequence does not end the stream: the generation continues and
+        # the client still gets the last event, with the statistics of the
+        # generation. Only the text after the stop sequence is dropped.
+    # The generation is over: the filter releases the tail it held back, it
+    # cannot become a stop sequence any more.
     remaining = stop_filter.flush()
     if remaining:
         yield format_event(_partial_payload(model, created_at, remaining), stream_format)
+    yield format_event(_final_payload(model, created_at, result, options), stream_format)
 
 
 def chat_events(
@@ -112,20 +117,23 @@ def chat_events(
     created_at = _now()
     stream_format = configured_format()
     stop_filter = StopSequenceFilter(stop)
+    result: GenerationResult | None = None
     for chunk in engine.generate_chat_stream(messages, model=model, **options):
         if chunk.result is not None:
-            yield format_event(
-                _final_chat_payload(model, created_at, chunk, options), stream_format
-            )
-            return
+            result = chunk.result
+            break
         text = stop_filter.feed(chunk.text)
         if text:
             yield format_event(_partial_chat_payload(model, created_at, text), stream_format)
-        if stop_filter.stopped:
-            return
+        # A stop sequence does not end the stream: the generation continues and
+        # the client still gets the last event, with the statistics of the
+        # generation. Only the text after the stop sequence is dropped.
+    # The generation is over: the filter releases the tail it held back, it
+    # cannot become a stop sequence any more.
     remaining = stop_filter.flush()
     if remaining:
         yield format_event(_partial_chat_payload(model, created_at, remaining), stream_format)
+    yield format_event(_final_chat_payload(model, created_at, result, options), stream_format)
 
 
 def _partial_payload(model: str, created_at: str, text: str) -> dict[str, Any]:
@@ -134,10 +142,9 @@ def _partial_payload(model: str, created_at: str, text: str) -> dict[str, Any]:
 
 
 def _final_payload(
-    model: str, created_at: str, chunk: StreamChunk, options: dict[str, object]
+    model: str, created_at: str, result: GenerationResult | None, options: dict[str, object]
 ) -> dict[str, Any]:
     """Return the payload of the last completion event."""
-    result = chunk.result
     return {
         "model": model,
         "created_at": created_at,
@@ -164,10 +171,9 @@ def _partial_chat_payload(model: str, created_at: str, text: str) -> dict[str, A
 
 
 def _final_chat_payload(
-    model: str, created_at: str, chunk: StreamChunk, options: dict[str, object]
+    model: str, created_at: str, result: GenerationResult | None, options: dict[str, object]
 ) -> dict[str, Any]:
     """Return the payload of the last chat event."""
-    result = chunk.result
     return {
         "model": model,
         "created_at": created_at,

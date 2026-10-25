@@ -463,6 +463,85 @@ def test_a_stream_is_cut_at_a_stop_sequence(service: TestClient, factory: FakeFa
     assert "".join(event["response"] for event in events) == "before "
 
 
+def test_a_stream_ends_with_the_last_event(service: TestClient, factory: FakeFactory) -> None:
+    """The client gets the last event, also when a stop sequence was found."""
+    factory.model.chunks = ["before ", "STOP", " after"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1]["done"] is True
+    assert events[-1]["done_reason"] == "stop"
+    assert events[-1]["response"] == ""
+
+
+def test_a_chat_stream_ends_with_the_last_event(service: TestClient, factory: FakeFactory) -> None:
+    """The client gets the last event, also when a stop sequence was found."""
+    factory.model.chunks = ["before ", "STOP", " after"]
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": PROMPT}],
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1]["done"] is True
+    assert events[-1]["message"] == {"role": "assistant", "content": ""}
+
+
+def test_a_stream_releases_the_tail_of_a_stop_sequence(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The text that could still become a stop sequence is released at the end."""
+    factory.model.chunks = ["the sky is ", "STO"]
+
+    response = service.post(
+        "/api/generate",
+        json={
+            "model": MODEL,
+            "prompt": PROMPT,
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["response"] for event in events) == "the sky is STO"
+
+
+def test_a_chat_stream_releases_the_tail_of_a_stop_sequence(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The text that could still become a stop sequence is released at the end."""
+    factory.model.chunks = ["the sky is ", "STO"]
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": PROMPT}],
+            "stream": True,
+            "options": {"stop": ["STOP"]},
+        },
+    )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert "".join(event["message"]["content"] for event in events) == "the sky is STO"
+
+
 def test_a_stream_rejects_an_unknown_model(service: TestClient) -> None:
     response = service.post(
         "/api/generate", json={"model": "other-model", "prompt": PROMPT, "stream": True}
