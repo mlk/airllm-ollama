@@ -296,6 +296,28 @@ src/airllm_ollama/
   `ChatMessage.role` is free-form (Ollama is permissive too); tool calls are
   not supported yet, so a `tool` role is rendered like any other role.
 
+### OpenAI compatibility (issue #20, done)
+
+* The `/v1/*` routes mirror the OpenAI API, so that the official client can be
+  pointed at this service with `base_url="http://host:port/v1"`. They live in
+  `api/openai.py` (router `openai_router`) and `schemas/openai.py`.
+* `GET /v1/models` answers with the single served model, `GET
+  /v1/models/{model_id}` with that model alone. The id of the model is the
+  configured `model_name`; the `created` timestamp is the modification time of
+  the checkpoint.
+* The model id may contain a slash (a Hugging Face repository id), so the route
+  uses the `:path` converter. A tag (`name:latest`) resolves to the served
+  model, like in Ollama — `engine.model_names_match()` does the check.
+* The errors of these routes are answered in the **OpenAI** format
+  (`{"error": {"message": ..., "type": ..., "param": ..., "code": ...}}`), not
+  in the Ollama one: `api.openai.OpenAIError` carries the payload and
+  `api.openai.openai_error_handler` renders it. The exception handler is
+  registered in `create_app()`.
+* The validation errors of the `/api/*` routes keep the Ollama format
+  (`{"error": "..."}`) — the `/v1/*` routes have no request body, so they
+  cannot raise one. The completion endpoints (#22, #23) have to decide whether
+  they use the Ollama or the OpenAI format for a malformed body.
+
 ## Data usage policy (important)
 
 The maintainer is on a **metered connection** — never download large artifacts.
