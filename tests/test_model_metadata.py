@@ -13,6 +13,7 @@ from airllm_ollama.model_metadata import (
     clear_metadata_cache,
     collect_metadata,
 )
+from conftest import DEFAULT_PARAMETERS
 
 
 def test_metadata_of_a_missing_checkpoint_is_empty(tmp_path: Path) -> None:
@@ -204,3 +205,74 @@ def test_safetensors_header_is_read_without_loading_the_weights(
 
     assert header_size > 0
     assert metadata.parameter_size == "1.3B"
+
+
+def test_model_info_holds_the_configuration(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """The information about the model is the configuration of the checkpoint."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+
+    metadata = collect_metadata(str(checkpoint))
+
+    assert metadata.model_info["model_type"] == "llama"
+    assert metadata.model_info["general.architecture"] == "llama"
+    assert metadata.model_info["general.parameter_count"] == DEFAULT_PARAMETERS
+
+
+def test_model_info_of_a_missing_checkpoint_is_empty(tmp_path: Path) -> None:
+    metadata = collect_metadata(str(tmp_path / "does-not-exist"))
+
+    assert metadata.model_info == {}
+    assert metadata.template == ""
+
+
+def test_the_template_is_read_from_the_tokenizer_config(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """The chat template of the checkpoint is part of the metadata."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+    (checkpoint / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "{{ messages[0].content }}"}), encoding="utf-8"
+    )
+
+    metadata = collect_metadata(str(checkpoint))
+
+    assert metadata.template == "{{ messages[0].content }}"
+
+
+def test_the_template_is_read_from_the_jinja_file(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """The current place of the chat template is a file of its own."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+    (checkpoint / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+
+    metadata = collect_metadata(str(checkpoint))
+
+    assert metadata.template == "{{ messages }}"
+
+
+def test_a_template_that_is_a_mapping_uses_the_default(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """Some checkpoints hold a mapping of named templates."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+    (checkpoint / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": {"default": "{{ default }}", "tool": "{{ tool }}"}}),
+        encoding="utf-8",
+    )
+
+    metadata = collect_metadata(str(checkpoint))
+
+    assert metadata.template == "{{ default }}"
+
+
+def test_a_checkpoint_without_a_template_has_none(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    checkpoint = write_checkpoint(tmp_path / "checkpoint")
+
+    metadata = collect_metadata(str(checkpoint))
+
+    assert metadata.template == ""

@@ -7,6 +7,7 @@ metadata instead of triggering a download.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import struct
@@ -31,6 +32,8 @@ class CheckpointMetadata:
     families: tuple[str, ...]
     parameter_size: str
     format: str
+    model_info: dict[str, object] = dataclasses.field(default_factory=dict)
+    template: str = ""
 
 
 def collect_metadata(model_path: str) -> CheckpointMetadata:
@@ -72,14 +75,17 @@ def _collect_metadata(model_path: str) -> CheckpointMetadata:
         )
 
     weights = _weights_file(directory)
+    count = _parameter_count(directory)
     return CheckpointMetadata(
         size=_total_size(directory),
         digest=_digest(weights) if weights is not None else "",
         modified_at=_timestamp(_modified_at(directory)),
         family=_family(directory),
         families=_families(directory),
-        parameter_size=_parameter_size(directory),
+        parameter_size=_format_parameter_size(count) if count else "",
         format=_format(directory),
+        model_info=_model_info(directory, count),
+        template=_template(directory),
     )
 
 
@@ -121,14 +127,65 @@ def _timestamp(moment: datetime) -> str:
 
 def _config(directory: Path) -> dict[str, object]:
     """Return the parsed ``config.json`` of the checkpoint, if present."""
-    config_path = directory / "config.json"
-    if not config_path.is_file():
+    return _read_json(directory / "config.json")
+
+
+def _tokenizer_config(directory: Path) -> dict[str, object]:
+    """Return the parsed ``tokenizer_config.json`` of the checkpoint, if present."""
+    return _read_json(directory / "tokenizer_config.json")
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    """Return the parsed content of a JSON file, empty when it is not usable."""
+    if not path.is_file():
         return {}
     try:
-        parsed = json.loads(config_path.read_text(encoding="utf-8"))
+        parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _model_info(directory: Path, parameters: int) -> dict[str, object]:
+    """Return the information about the model, the way Ollama reports it.
+
+    Args:
+        directory: The checkpoint directory.
+        parameters: The number of parameters of the checkpoint, 0 when unknown.
+
+    Returns:
+        The configuration of the checkpoint, with the general information of
+        Ollama added to it.
+    """
+    info = dict(_config(directory))
+    family = _family(directory)
+    if family:
+        info["general.architecture"] = family
+    if parameters:
+        info["general.parameter_count"] = parameters
+    return info
+
+
+def _template(directory: Path) -> str:
+    """Return the chat template of the checkpoint, empty when it has none.
+
+    The template lives in ``chat_template.jinja`` (the current place) or in
+    the ``chat_template`` field of ``tokenizer_config.json`` (where it is
+    sometimes a mapping of named templates).
+    """
+    jinja = directory / "chat_template.jinja"
+    if jinja.is_file():
+        try:
+            return jinja.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    template = _tokenizer_config(directory).get("chat_template")
+    if isinstance(template, str):
+        return template
+    if isinstance(template, dict):
+        default = template.get("default")
+        return default if isinstance(default, str) else ""
+    return ""
 
 
 def _family(directory: Path) -> str:
@@ -174,13 +231,13 @@ def _family_from_architecture(architecture: str) -> str:
     return architecture.split("For")[0].lower()
 
 
-def _parameter_size(directory: Path) -> str:
-    """Return the parameter count of the checkpoint, e.g. ``135M``."""
+def _parameter_count(directory: Path) -> int:
+    """Return the number of parameters of the checkpoint, 0 when it is unknown."""
     weights = _weights_file(directory)
     if weights is None or weights.suffix != ".safetensors":
-        return ""
+        return 0
     count = _safetensors_parameter_count(weights)
-    return _format_parameter_size(count) if count else ""
+    return count or 0
 
 
 def _safetensors_parameter_count(weights: Path) -> int | None:
