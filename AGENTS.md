@@ -313,6 +313,11 @@ src/airllm_ollama/
   it. `temperature`, `max_tokens` and `stop` are translated with
   `options.map_options()`; unknown parameters are ignored, so a client that
   sends the full option set keeps working.
+* `POST /v1/completions` (issue #23) is the legacy endpoint: it takes a prompt
+  instead of a chat history and answers with a text completion. The prompt may
+  be a list — the answer then has one choice per prompt, in the same order.
+  The prompts are completed one after the other, the engine serialises the
+  generations anyway.
 * A streamed answer is a stream of Server-Sent Events (`text/event-stream`),
   one `data:` event per chunk, the last one `data: [DONE]`. The stream always
   ends with the last chunk (with the `finish_reason`), also when a stop

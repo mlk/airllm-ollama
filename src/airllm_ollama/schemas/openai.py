@@ -119,3 +119,56 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     choices: list[ChatCompletionChunkChoice] = Field(default_factory=list)
+
+
+class CompletionRequest(BaseModel):
+    """The request payload of ``POST /v1/completions``."""
+
+    model: str
+    # The legacy API accepts a list of prompts and answers with one choice per
+    # prompt.
+    prompt: str | list[str]
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    stop: str | list[str] | None = None
+    stream: bool = False
+
+
+class CompletionChoice(BaseModel):
+    """A choice of a text completion."""
+
+    text: str = ""
+    index: int = 0
+    logprobs: None = None
+    finish_reason: str = "stop"
+
+
+class TextCompletion(BaseModel):
+    """The response of ``POST /v1/completions``."""
+
+    id: str
+    object: str = "text_completion"
+    created: int
+    model: str
+    choices: list[CompletionChoice]
+    usage: Usage = Field(default_factory=Usage)
+
+
+class CompletionChunkChoice(BaseModel):
+    """A choice of a streamed text completion."""
+
+    text: str = ""
+    index: int = 0
+    logprobs: None = None
+    finish_reason: str | None = None
+
+
+class TextCompletionChunk(BaseModel):
+    """One chunk of a streamed text completion."""
+
+    id: str
+    object: str = "text_completion"
+    created: int
+    model: str
+    choices: list[CompletionChunkChoice] = Field(default_factory=list)

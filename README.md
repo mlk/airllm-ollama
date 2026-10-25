@@ -178,6 +178,7 @@ so that the official OpenAI client can be pointed at this service.
 | `GET` | `/v1/models` | The served model, in the OpenAI format |
 | `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
 | `POST` | `/v1/chat/completions` | Chat completion, in the OpenAI format (streaming and non-streaming) |
+| `POST` | `/v1/completions` | Text completion, in the OpenAI format (streaming and non-streaming) |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -425,6 +426,35 @@ Besides `model` and `messages`, the endpoint accepts `temperature`, `top_p`,
 `max_tokens` (or its newer name `max_completion_tokens`), and `stop` (a string
 or a list of strings). Unknown parameters are ignored, so a client that sends
 the full option set keeps working.
+
+`POST /v1/completions` is the legacy endpoint: it takes a prompt instead of a
+chat history, and answers with a text completion.
+
+```bash
+curl http://127.0.0.1:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "prompt": "Why is the sky blue?"
+      }'
+```
+
+```json
+{
+  "id": "cmpl-airllm-6d9907bba9cd",
+  "object": "text_completion",
+  "created": 1792907101,
+  "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "choices": [
+    {"text": "Rayleigh scattering.", "index": 0, "logprobs": null, "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+}
+```
+
+The legacy API accepts a list of prompts as well — the answer then has one
+choice per prompt, in the same order. With `"stream": true` the answer is a
+stream of Server-Sent Events, the way the OpenAI API streams it.
 
 ### Verifying a running instance
 
