@@ -297,6 +297,9 @@ def _completion_events(
             yield DONE
             return
     yield from _content_event(completion_id, created, model, stop_filter.flush())
+    # The stream ended without the statistics of the generation: the client
+    # still expects the last chunk.
+    yield _chunk_event(completion_id, created, model, finish_reason="stop")
     yield DONE
 
 
