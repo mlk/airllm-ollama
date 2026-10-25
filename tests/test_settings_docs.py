@@ -151,6 +151,10 @@ def _readme_value(cell: str) -> str:
 def _readme_mismatches(text: str) -> list[str]:
     """Return the documented defaults that differ from the default of the setting.
 
+    The documented value is read through the settings, so that it is compared
+    with the default as a typed value — a boolean or a list is not compared as
+    its string form.
+
     Args:
         text: The content of the README.
 
@@ -163,7 +167,12 @@ def _readme_mismatches(text: str) -> list[str]:
         if name not in defaults:
             # An unknown setting is reported by the key check.
             continue
-        if value != str(defaults[name]):
+        try:
+            parsed = _parse(name, value)
+        except ValidationError:
+            mismatches.append(f"{name} is documented as '{value}', which does not fit the setting")
+            continue
+        if parsed != defaults[name]:
             mismatches.append(f"{name} is documented as '{value}'")
     return mismatches
 
@@ -425,6 +434,10 @@ def test_no_setting_is_documented_twice_in_the_readme() -> None:
         ),
         ("| `AIRLLM_OLLAMA_MODEL_PATH` | _(empty)_ | Path |", []),
         ("| `AIRLLM_OLLAMA_KEEP_ALIVE` | `5m` | Lifetime |", ["keep_alive is documented as '5m'"]),
+        (
+            "| `AIRLLM_OLLAMA_PORT` | `80OO` | Server port |",
+            ["port is documented as '80OO', which does not fit the setting"],
+        ),
     ],
 )
 def test_the_readme_checks_catch_a_drift(row: str, mismatches: list[str]) -> None:
