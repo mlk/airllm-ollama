@@ -331,8 +331,11 @@ The maintainer is on a **metered connection** — never download large artifacts
   explicitly — `main([])`, never `main()`. Without arguments the entry point
   parses `sys.argv`, which inside the suite are the arguments of the *pytest*
   process.
-* A new setting has to be documented in `.env.example` — `tests/test_env_example.py`
-  fails otherwise. A commented out line that shows a value other than the default
-  ends with `# alternative`, so the guard can tell it apart from a default.
+* A new setting has to be documented in `.env.example` **and** in the settings
+  table of the README — `tests/test_settings_docs.py` fails otherwise. The
+  table of the README shows the default in backticks, an empty one as
+  `_(empty)_`. A commented out line of the example file that shows a value
+  other than the default ends with `# alternative`, so that the guard can tell
+  it apart from a default.
 * Cover the happy path **and** the error paths (validation errors, model mismatch,
   upstream failures) — the acceptance criteria ask for ≥ 80 % coverage.
