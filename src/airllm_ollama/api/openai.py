@@ -8,7 +8,8 @@ serves a single model, so the list has exactly one entry.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 from uuid import uuid4
@@ -35,10 +36,15 @@ from airllm_ollama.schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
     ChatCompletionRequest,
+    CompletionChoice,
+    CompletionChunkChoice,
+    CompletionRequest,
     Delta,
     ErrorDetail,
     ModelCard,
     ModelList,
+    TextCompletion,
+    TextCompletionChunk,
     Usage,
 )
 
@@ -360,6 +366,224 @@ def _chunk_event(
 def _completion_id() -> str:
     """Return the id of a completion."""
     return f"chatcmpl-airllm-{uuid4().hex[:12]}"
+
+
+@openai_router.post("/completions", response_model=TextCompletion)
+async def completions(request: CompletionRequest) -> TextCompletion | StreamingResponse:
+    """Answer a text completion, as ``POST /v1/completions`` does in OpenAI.
+
+    The legacy endpoint takes a prompt instead of a chat history. Every prompt
+    of the request is completed, and the answer has one choice per prompt.
+
+    Args:
+        request: The request of the client.
+
+    Returns:
+        The completion, or a stream of the chunks of the completion.
+
+    Raises:
+        OpenAIError: If the client asked for another model.
+    """
+    settings = get_settings()
+    if not model_names_match(request.model, settings.model_name):
+        raise OpenAIError(
+            f"Model '{request.model}' not found. Server only supports '{settings.model_name}'.",
+            status_code=400,
+            param="model",
+            code="model_not_found",
+        )
+    prompts = [request.prompt] if isinstance(request.prompt, str) else request.prompt
+    stop = _stop_sequences(request.stop)
+    options = map_options(
+        GenerateOptions(
+            temperature=request.temperature,
+            top_p=request.top_p,
+            num_predict=request.max_tokens,
+            stop=stop,
+        )
+    )
+    engine = get_engine()
+    keep_alive = parse_keep_alive(settings.keep_alive)
+    if request.stream:
+        # The model is loaded before the headers are sent: a broken checkpoint
+        # becomes a 503 instead of a truncated stream.
+        await run_in_threadpool(engine.prepare, request.model)
+        return StreamingResponse(
+            _text_events(engine, prompts, request.model, options, stop, keep_alive),
+            media_type=SSE_MEDIA_TYPE,
+        )
+    choices: list[CompletionChoice] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    for index, prompt in enumerate(prompts):
+        result = await run_in_threadpool(
+            engine.generate_result, prompt, model=request.model, system=None, raw=False, **options
+        )
+        choices.append(
+            CompletionChoice(
+                text=apply_stop_sequences(result.text, stop),
+                index=index,
+                finish_reason=generation_done_reason(result, options),
+            )
+        )
+        prompt_tokens += result.prompt_tokens
+        completion_tokens += result.generated_tokens
+    if keep_alive is not None:
+        engine.schedule_unload(keep_alive)
+    return TextCompletion(
+        id=_text_completion_id(),
+        created=int(time.time()),
+        model=settings.model_name,
+        choices=choices,
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _TextStream:
+    """The state that every chunk of a text completion shares."""
+
+    id: str
+    created: int
+    model: str
+
+
+def _text_events(
+    engine: AirLLMEngine,
+    prompts: Sequence[str],
+    model: str,
+    options: dict[str, object],
+    stop: list[str],
+    keep_alive: float | None = None,
+) -> Iterator[str]:
+    """Yield the Server-Sent Events of the completions of the prompts.
+
+    Args:
+        engine: The engine that runs the generation.
+        prompts: The prompts to complete.
+        model: The model the client asked for.
+        options: The translated generation options.
+        stop: The stop sequences requested by the client.
+        keep_alive: The lifetime of the loaded model, if one is configured.
+
+    Yields:
+        The events of the stream, the last one being ``[DONE]``.
+    """
+    stream = _TextStream(id=_text_completion_id(), created=int(time.time()), model=model)
+    try:
+        for index, prompt in enumerate(prompts):
+            yield from _text_prompt_events(engine, prompt, index, stream, options, stop)
+        yield DONE
+    finally:
+        if keep_alive is not None:
+            # The model stays loaded for the configured idle time.
+            engine.schedule_unload(keep_alive)
+
+
+def _text_prompt_events(
+    engine: AirLLMEngine,
+    prompt: str,
+    index: int,
+    stream: _TextStream,
+    options: dict[str, object],
+    stop: list[str],
+) -> Iterator[str]:
+    """Yield the Server-Sent Events of the answer of one prompt.
+
+    Args:
+        engine: The engine that runs the generation.
+        prompt: The prompt to complete.
+        index: The number of the prompt, the index of the choice.
+        stream: The state that every chunk shares.
+        options: The translated generation options.
+        stop: The stop sequences requested by the client.
+
+    Yields:
+        The events of the answer of the prompt.
+    """
+    stop_filter = StopSequenceFilter(stop)
+    for chunk in engine.generate_stream(
+        prompt, model=stream.model, system=None, raw=False, **options
+    ):
+        if chunk.result is not None:
+            # The generation is over: the filter releases the tail it held
+            # back, it cannot become a stop sequence any more.
+            yield from _text_content_event(stream, index, stop_filter.flush())
+            yield _text_chunk_event(
+                stream,
+                index,
+                finish_reason=generation_done_reason(chunk.result, options),
+            )
+            return
+        text = stop_filter.feed(chunk.text)
+        if text:
+            yield _text_chunk_event(stream, index, content=text)
+        if stop_filter.stopped:
+            # The stop sequence was found: the answer is complete, but the
+            # client still expects the last chunk.
+            yield _text_chunk_event(stream, index, finish_reason="stop")
+            return
+    yield from _text_content_event(stream, index, stop_filter.flush())
+    # The stream ended without the statistics of the generation: the client
+    # still expects the last chunk.
+    yield _text_chunk_event(stream, index, finish_reason="stop")
+
+
+def _text_content_event(stream: _TextStream, index: int, content: str) -> Iterator[str]:
+    """Yield the event of a piece of text, if there is one.
+
+    Args:
+        stream: The state that every chunk shares.
+        index: The number of the choice.
+        content: The text of the chunk.
+
+    Yields:
+        The event of the text, nothing when the text is empty.
+    """
+    if not content:
+        return
+    yield _text_chunk_event(stream, index, content=content)
+
+
+def _text_chunk_event(
+    stream: _TextStream,
+    index: int,
+    content: str = "",
+    finish_reason: str | None = None,
+) -> str:
+    """Render a chunk of a text completion as a Server-Sent Event.
+
+    Args:
+        stream: The state that every chunk shares.
+        index: The number of the choice.
+        content: The text of the chunk.
+        finish_reason: The reason the answer ended, in the last chunk.
+
+    Returns:
+        The event, ready to be written to the stream.
+    """
+    chunk = TextCompletionChunk(
+        id=stream.id,
+        created=stream.created,
+        model=stream.model,
+        choices=[
+            CompletionChunkChoice(
+                text=content,
+                index=index,
+                finish_reason=finish_reason,
+            )
+        ],
+    )
+    return f"data: {chunk.model_dump_json()}\n\n"
+
+
+def _text_completion_id() -> str:
+    """Return the id of a text completion."""
+    return f"cmpl-airllm-{uuid4().hex[:12]}"
 
 
 def _stop_sequences(stop: str | list[str] | None) -> list[str]:

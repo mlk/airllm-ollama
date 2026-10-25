@@ -34,16 +34,21 @@ def engine(mocker: MockerFixture) -> Any:
         prompt_tokens=4,
         generated_tokens=3,
     )
-    double.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(
-        [
-            StreamChunk(text="the "),
-            StreamChunk(text="sky"),
-            StreamChunk(
-                text="",
-                result=GenerationResult(text="the sky", prompt_tokens=4, generated_tokens=3),
-            ),
-        ]
+    double.return_value.generate_result.return_value = GenerationResult(
+        text="the sky is blue",
+        prompt_tokens=4,
+        generated_tokens=3,
     )
+    chunks = [
+        StreamChunk(text="the "),
+        StreamChunk(text="sky"),
+        StreamChunk(
+            text="",
+            result=GenerationResult(text="the sky", prompt_tokens=4, generated_tokens=3),
+        ),
+    ]
+    double.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: iter(chunks)
+    double.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(chunks)
     return double
 
 
@@ -421,3 +426,280 @@ def test_chat_completions_translates_the_nucleus_sampling(
     _, kwargs = engine.return_value.generate_chat.call_args
     assert kwargs["top_p"] == 0.9
     assert kwargs["do_sample"] is True
+
+
+def test_completions_returns_the_openai_shape(client: TestClient, model: str, engine: Any) -> None:
+    """The text completion mirrors the OpenAI API."""
+    engine.return_value.generate_result.return_value = GenerationResult(
+        text="blue sky",
+        prompt_tokens=7,
+        generated_tokens=2,
+    )
+
+    response = client.post(
+        "/v1/completions", json={"model": model, "prompt": "why is the sky blue?"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "text_completion"
+    assert payload["model"] == model
+    assert payload["id"].startswith("cmpl-airllm-")
+    assert isinstance(payload["created"], int)
+    assert payload["choices"] == [
+        {"text": "blue sky", "index": 0, "logprobs": None, "finish_reason": "stop"}
+    ]
+    assert payload["usage"] == {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
+
+
+def test_completions_forwards_the_prompt(client: TestClient, model: str, engine: Any) -> None:
+    """The prompt is handed to the engine unchanged."""
+    client.post("/v1/completions", json={"model": model, "prompt": "why is the sky blue?"})
+
+    args, kwargs = engine.return_value.generate_result.call_args
+    assert args[0] == "why is the sky blue?"
+    assert kwargs["model"] == model
+
+
+def test_completions_translates_the_options(client: TestClient, model: str, engine: Any) -> None:
+    """The OpenAI parameters are mapped to the ones of the engine."""
+    client.post(
+        "/v1/completions",
+        json={
+            "model": model,
+            "prompt": "why is the sky blue?",
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "max_tokens": 16,
+        },
+    )
+
+    _, kwargs = engine.return_value.generate_result.call_args
+    assert kwargs["temperature"] == 0.5
+    assert kwargs["top_p"] == 0.9
+    assert kwargs["max_new_tokens"] == 16
+    assert kwargs["do_sample"] is True
+
+
+def test_completions_answer_one_choice_per_prompt(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The legacy API accepts a list of prompts."""
+    engine.return_value.generate_result.side_effect = [
+        GenerationResult(text="first", prompt_tokens=2, generated_tokens=1),
+        GenerationResult(text="second", prompt_tokens=3, generated_tokens=2),
+    ]
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": ["one", "two"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [choice["text"] for choice in payload["choices"]] == ["first", "second"]
+    assert [choice["index"] for choice in payload["choices"]] == [0, 1]
+    assert payload["usage"] == {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+
+
+def test_completions_reject_another_model(client: TestClient, model: str, engine: Any) -> None:
+    """An unknown model is answered with the OpenAI error format."""
+    response = client.post(
+        "/v1/completions",
+        json={"model": "other-model", "prompt": "why is the sky blue?"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["message"] == (
+        f"Model 'other-model' not found. Server only supports '{model}'."
+    )
+    assert payload["error"]["type"] == "invalid_request_error"
+    assert payload["error"]["param"] == "model"
+    assert payload["error"]["code"] == "model_not_found"
+    engine.return_value.generate_result.assert_not_called()
+
+
+def test_completions_answer_a_malformed_body_in_the_openai_format(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """A request without a prompt is answered in the OpenAI format."""
+    response = client.post("/v1/completions", json={"model": model})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_completions_cut_at_a_stop_sequence(client: TestClient, model: str, engine: Any) -> None:
+    """The answer is cut at the first stop sequence."""
+    engine.return_value.generate_result.return_value = GenerationResult(
+        text="before STOP after",
+        prompt_tokens=2,
+        generated_tokens=3,
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": "why?", "stop": "STOP"},
+    )
+
+    assert response.json()["choices"][0]["text"] == "before "
+
+
+def test_completions_stream_server_sent_events(client: TestClient, model: str, engine: Any) -> None:
+    """A streamed completion is a stream of Server-Sent Events."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="blue "),
+            StreamChunk(text="sky"),
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="blue sky", prompt_tokens=7, generated_tokens=2),
+            ),
+        ]
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": "why?", "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [line for line in response.text.splitlines() if line]
+    assert events[-1] == "data: [DONE]"
+    chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
+    assert "".join(chunk["choices"][0]["text"] for chunk in chunks) == "blue sky"
+    assert chunks[0]["object"] == "text_completion"
+    assert chunks[0]["choices"][0]["index"] == 0
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_completions_unload_the_model_after_the_configured_idle_time(
+    client: TestClient, model: str, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keep alive setting is honoured, like in the Ollama routes."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "5m")
+    get_settings.cache_clear()
+
+    client.post("/v1/completions", json={"model": model, "prompt": "why?"})
+
+    engine.return_value.schedule_unload.assert_called_once_with(300.0)
+
+
+def test_a_streamed_completion_unloads_the_model_afterwards(
+    client: TestClient, model: str, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keep alive setting is honoured for a streamed answer too."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "5m")
+    get_settings.cache_clear()
+
+    client.post("/v1/completions", json={"model": model, "prompt": "why?", "stream": True})
+
+    engine.return_value.schedule_unload.assert_called_once_with(300.0)
+
+
+def test_a_streamed_completion_is_cut_at_a_stop_sequence(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """A streamed completion is cut at the first stop sequence."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="before "),
+            StreamChunk(text="STOP after"),
+        ]
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": "why?", "stop": "STOP", "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    assert events[-1] == "data: [DONE]"
+    chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
+    assert "".join(chunk["choices"][0]["text"] for chunk in chunks) == "before "
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_a_streamed_completion_releases_the_tail_of_a_stop_sequence(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The text that could still become a stop sequence is released at the end."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="the sky is "),
+            StreamChunk(text="STO"),
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="the sky is STO", prompt_tokens=4, generated_tokens=3),
+            ),
+        ]
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": "why?", "stop": "STOP", "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
+    assert "".join(chunk["choices"][0]["text"] for chunk in chunks) == "the sky is STO"
+
+
+def test_a_streamed_completion_without_statistics_still_ends(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """A stream that ends without the statistics still ends with the last chunk."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [StreamChunk(text="the sky")]
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": "why?", "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    assert events[-1] == "data: [DONE]"
+    chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_a_streamed_completion_answers_one_choice_per_prompt(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """Every prompt of the request is completed, with its own index."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: iter(
+        [
+            StreamChunk(text="first"),
+            StreamChunk(
+                text="",
+                result=GenerationResult(text="first", prompt_tokens=2, generated_tokens=1),
+            ),
+        ]
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": ["one", "two"], "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
+    assert [chunk["choices"][0]["index"] for chunk in chunks] == [0, 0, 1, 1]
+
+
+def test_a_streamed_chat_unloads_the_model_afterwards(
+    client: TestClient, model: str, engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keep alive setting is honoured for a streamed chat too."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_KEEP_ALIVE", "5m")
+    get_settings.cache_clear()
+
+    client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": MESSAGES, "stream": True},
+    )
+
+    engine.return_value.schedule_unload.assert_called_once_with(300.0)
