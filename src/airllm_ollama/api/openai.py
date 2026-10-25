@@ -177,6 +177,7 @@ async def chat_completions(
     options = map_options(
         GenerateOptions(
             temperature=request.temperature,
+            top_p=request.top_p,
             num_predict=_max_tokens(request),
             stop=stop,
         )

@@ -407,3 +407,17 @@ def test_chat_completions_accepts_the_newer_max_tokens_name(
 
     _, kwargs = engine.return_value.generate_chat.call_args
     assert kwargs["max_new_tokens"] == 24
+
+
+def test_chat_completions_translates_the_nucleus_sampling(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The nucleus sampling of the OpenAI API is applied."""
+    client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": MESSAGES, "top_p": 0.9},
+    )
+
+    _, kwargs = engine.return_value.generate_chat.call_args
+    assert kwargs["top_p"] == 0.9
+    assert kwargs["do_sample"] is True
