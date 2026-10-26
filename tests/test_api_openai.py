@@ -703,3 +703,15 @@ def test_a_streamed_chat_unloads_the_model_afterwards(
     )
 
     engine.return_value.schedule_unload.assert_called_once_with(300.0)
+
+
+def test_the_embeddings_endpoint_is_not_implemented(client: TestClient) -> None:
+    """The service generates text, it does not produce embeddings."""
+    response = client.post("/v1/embeddings", json={"model": "some-model", "input": "a text"})
+
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload["error"]["message"] == (
+        "This service generates text; it does not produce embeddings."
+    )
+    assert payload["error"]["code"] == "not_implemented"
