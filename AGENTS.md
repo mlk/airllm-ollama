@@ -133,6 +133,8 @@ src/airllm_ollama/
 | `GET` | `/health` | `HealthResponse` — status, version, model, `model_loaded` |
 | `GET` | `/api/version` | `VersionResponse` — `{"version": "..."}` |
 | `GET` | `/api/tags` | `TagsResponse` — Ollama's `{"models": [...]}` shape |
+| `POST` | `/api/show` | `ShowResponse` — the details of the model, as in Ollama |
+| `GET` | `/api/ps` | `PsResponse` — the models that are loaded, as in Ollama |
 | `POST` | `/api/generate` | `GenerateResponse` — Ollama's non-streaming generate shape |
 | `POST` | `/api/chat` | `ChatResponse` — Ollama's non-streaming chat shape |
 | `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy` | `501` — Ollama's model management, not implemented |
@@ -150,6 +152,16 @@ src/airllm_ollama/
 * The metadata cache is keyed by the model path and holds the four most recent
   entries; it is never invalidated automatically. Call
   `clear_metadata_cache()` after the checkpoint on disk changed.
+* `POST /api/show` answers the information about the model: the `details` and
+  the `capabilities` are the ones `/api/tags` reports, the `model_info` is the
+  configuration of the checkpoint and the `template` its chat template (from
+  `chat_template.jinja` or the `chat_template` of `tokenizer_config.json`). A
+  checkpoint has no `Modelfile`, so the service synthesises one that describes
+  the model it serves.
+* `GET /api/ps` answers the models that are loaded — the model is loaded
+  lazily, so the list is empty until the first request. The `expires_at` is the
+  moment the model will be unloaded (`engine.unload_at`), the `size_vram` is `0`
+  because AirLLM streams the model layer by layer.
 * `capabilities` is currently hardcoded to `["completion"]` — extend it when
   the chat/embedding endpoints land (issues #4/#5).
 * The model management endpoints of Ollama (`/api/pull`, `/api/push`,

@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
@@ -237,8 +238,11 @@ class AirLLMEngine:
         self._load_duration_ns = 0
         self._load_lock = threading.Lock()
         self._generation_lock = threading.Lock()
-        self._unload_lock = threading.Lock()
+        # A re-entrant lock: `schedule_unload()` holds it while it unloads
+        # the model.
+        self._unload_lock = threading.RLock()
         self._unload_timer: threading.Timer | None = None
+        self._unload_at: datetime | None = None
 
     @property
     def settings(self) -> Settings:
@@ -291,6 +295,8 @@ class AirLLMEngine:
         """
         with self._generation_lock, self._load_lock:
             self._model = None
+        with self._unload_lock:
+            self._unload_at = None
 
     def schedule_unload(self, delay_seconds: float) -> None:
         """Unload the model once it has been idle for ``delay_seconds``.
@@ -310,6 +316,7 @@ class AirLLMEngine:
             timer = threading.Timer(delay_seconds, self.unload)
             timer.daemon = True
             self._unload_timer = timer
+            self._unload_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
             timer.start()
 
     def cancel_scheduled_unload(self) -> None:
@@ -322,6 +329,13 @@ class AirLLMEngine:
         if self._unload_timer is not None:
             self._unload_timer.cancel()
             self._unload_timer = None
+        self._unload_at = None
+
+    @property
+    def unload_at(self) -> datetime | None:
+        """Return the moment the model will be unloaded, if one is scheduled."""
+        with self._unload_lock:
+            return self._unload_at
 
     def ensure_model_allowed(self, model: str | None) -> None:
         """Validate that ``model`` is the model served by this engine.

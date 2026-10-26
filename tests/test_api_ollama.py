@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -164,3 +164,66 @@ def test_ollama_client_style_request(client: TestClient) -> None:
     response = client.get("/api/tags")
 
     assert json.loads(response.content) == response.json()
+
+
+def test_api_show_describes_the_served_model(
+    client: TestClient, local_checkpoint: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The endpoint answers the information about the model."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_PATH", str(local_checkpoint))
+    get_settings.cache_clear()
+
+    response = client.post("/api/show", json={"model": get_settings().model_name})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["details"]["family"] == "llama"
+    assert payload["details"]["families"] == ["llama"]
+    assert payload["capabilities"] == ["completion"]
+    assert "general.architecture" in payload["model_info"]
+    assert f"FROM {local_checkpoint}" in payload["modelfile"]
+    assert "PARAMETER num_ctx" in payload["modelfile"]
+    assert "num_ctx" in payload["parameters"]
+
+
+def test_api_show_rejects_another_model(client: TestClient) -> None:
+    """Another model is answered with the Ollama error format."""
+    response = client.post("/api/show", json={"model": "other-model"})
+
+    assert response.status_code == 404
+    assert "error" in response.json()
+
+
+def test_api_ps_is_empty_while_the_model_is_not_loaded(client: TestClient) -> None:
+    """The model is loaded lazily, so the list starts empty."""
+    response = client.get("/api/ps")
+
+    assert response.status_code == 200
+    assert response.json() == {"models": []}
+
+
+def test_api_ps_lists_the_loaded_model(
+    client: TestClient,
+    local_checkpoint: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    """A loaded model is listed with its details."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_PATH", str(local_checkpoint))
+    get_settings.cache_clear()
+    engine = mocker.patch("airllm_ollama.api.routes.get_engine")
+    engine.return_value.is_loaded = True
+    engine.return_value.unload_at = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
+
+    response = client.get("/api/ps")
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert len(models) == 1
+    model = models[0]
+    assert model["name"] == get_settings().model_name
+    assert model["details"]["family"] == "llama"
+    assert model["expires_at"] == "2026-10-25T08:00:00Z"
+    # AirLLM streams the model layer by layer, the weights are never in the
+    # memory of the device at once.
+    assert model["size_vram"] == 0
