@@ -74,8 +74,8 @@ def test_the_score_is_the_weighted_average_of_the_levels() -> None:
 
 def test_the_score_follows_the_order_of_the_levels() -> None:
     """The levels of the scale decide the order, not the order of the answers."""
-    assert score({"high": 1.0, "low": 0.0}, ["low", "high"]) == pytest.approx(0.0)
-    assert score({"low": 1.0, "high": 0.0}, ["low", "high"]) == pytest.approx(1.0)
+    assert score({"high": 1.0, "low": 0.0}, ["low", "high"]) == pytest.approx(1.0)
+    assert score({"low": 1.0, "high": 0.0}, ["low", "high"]) == pytest.approx(0.0)
 
 
 def test_a_level_without_a_probability_counts_as_zero() -> None:
