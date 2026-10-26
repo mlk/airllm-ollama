@@ -60,6 +60,9 @@ SSE_MEDIA_TYPE = "text/event-stream"
 # The last event of a streamed answer.
 DONE = "data: [DONE]\n\n"
 
+# The status code of an endpoint this service does not implement.
+NOT_IMPLEMENTED = 501
+
 
 class OpenAIError(Exception):
     """An error that is answered in the OpenAI format."""
@@ -93,6 +96,23 @@ async def openai_error_handler(request: Request, exc: Exception) -> JSONResponse
     return JSONResponse(
         status_code=error.status_code,
         content={"error": error.detail.model_dump()},
+    )
+
+
+@openai_router.post("/embeddings", status_code=NOT_IMPLEMENTED, tags=["openai"])
+async def embeddings() -> None:
+    """Answer the embeddings of the inputs, as ``POST /v1/embeddings`` does in OpenAI.
+
+    This service generates text — it does not produce embeddings. The endpoint
+    exists so that a client gets a clear answer instead of a "not found".
+
+    Raises:
+        OpenAIError: Always — the endpoint is not implemented.
+    """
+    raise OpenAIError(
+        "This service generates text; it does not produce embeddings.",
+        status_code=NOT_IMPLEMENTED,
+        code="not_implemented",
     )
 
 
