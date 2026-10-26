@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from airllm_ollama.schemas.tags import ModelDetails
+from airllm_ollama.schemas.tags import CAPABILITIES, ModelDetails
 
 
 class ShowRequest(BaseModel):
@@ -22,4 +22,4 @@ class ShowResponse(BaseModel):
     template: str = ""
     details: ModelDetails = Field(default_factory=ModelDetails)
     model_info: dict[str, object] = Field(default_factory=dict)
-    capabilities: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=lambda: list(CAPABILITIES))
