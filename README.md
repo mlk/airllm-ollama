@@ -183,6 +183,7 @@ so that the official OpenAI client can be pointed at this service.
 | `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
 | `POST` | `/v1/chat/completions` | Chat completion, in the OpenAI format (streaming and non-streaming) |
 | `POST` | `/v1/completions` | Text completion, in the OpenAI format (streaming and non-streaming) |
+| `POST` | `/v1/embeddings` | Embeddings, in the OpenAI format — always `501`, this service generates text |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash

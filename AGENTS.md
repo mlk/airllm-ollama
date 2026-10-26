@@ -179,7 +179,8 @@ src/airllm_ollama/
 * The embedding endpoints of Ollama (`/api/embed` and the legacy
   `/api/embeddings`) answer `501` as well: the service generates text, it does
   not produce embeddings (issue #64). The `embedding` capability is therefore
-  not reported either.
+  not reported either. The OpenAI route `POST /v1/embeddings` answers `501` in
+  the OpenAI format.
 
 ### Engine (issue #2, done)
 
