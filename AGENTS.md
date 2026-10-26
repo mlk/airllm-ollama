@@ -145,6 +145,7 @@ src/airllm_ollama/
 | `POST` | `/api/chat` | `ChatResponse` — Ollama's non-streaming chat shape |
 | `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy` | `501` — Ollama's model management, not implemented |
 | `DELETE` | `/api/delete` | `501` — Ollama's model management, not implemented |
+| `POST` | `/api/embed`, `/api/embeddings` | `501` — Ollama's embeddings, not implemented |
 
 * The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
   real Ollama instance): `name`, `model`, `modified_at`, `size`, `digest`,
@@ -175,6 +176,10 @@ src/airllm_ollama/
   answer `501` with the Ollama error format: this service serves a single,
   pre-configured model and has no registry. A client gets a clear answer
   instead of a "not found".
+* The embedding endpoints of Ollama (`/api/embed` and the legacy
+  `/api/embeddings`) answer `501` as well: the service generates text, it does
+  not produce embeddings (issue #64). The `embedding` capability is therefore
+  not reported either.
 
 ### Engine (issue #2, done)
 

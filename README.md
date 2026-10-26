@@ -178,6 +178,7 @@ so that the official OpenAI client can be pointed at this service.
 | `POST` | `/api/generate` | Completion, as in Ollama (streaming and non-streaming) |
 | `POST` | `/api/chat` | Chat completion, as in Ollama (streaming and non-streaming) |
 | `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy`, `DELETE /api/delete` | Model management, as in Ollama — always `501`, this service serves a single model |
+| `POST` | `/api/embed`, `/api/embeddings` | Embeddings, as in Ollama — always `501`, this service generates text |
 | `GET` | `/v1/models` | The served model, in the OpenAI format |
 | `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
 | `POST` | `/v1/chat/completions` | Chat completion, in the OpenAI format (streaming and non-streaming) |
@@ -335,14 +336,14 @@ without a template gets the prompt with the system message in front of it
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
 model cannot be loaded and `400` for an invalid request body.
 
-### Model management
+### Endpoints that are not implemented
 
-Ollama manages a registry of models: it pulls them, pushes them, creates them
-from a `Modelfile`, copies them and deletes them. This service serves a
-single, pre-configured model — it has no registry.
+Two groups of Ollama's endpoints are exposed, but always answer
+`501 Not Implemented` — a client gets a clear answer instead of a "not found".
 
-The endpoints exist anyway, so that a client gets a clear answer instead of a
-"not found":
+**The model registry.** Ollama pulls models, pushes them, creates them from a
+`Modelfile`, copies them and deletes them. This service serves a single,
+pre-configured model — it has no registry:
 
 ```bash
 curl http://127.0.0.1:8000/api/pull -d '{"model": "llama3.2"}'
@@ -354,9 +355,22 @@ curl http://127.0.0.1:8000/api/pull -d '{"model": "llama3.2"}'
 }
 ```
 
-The status code is `501 Not Implemented`. To serve another model, set
-`AIRLLM_OLLAMA_MODEL_NAME` (and `AIRLLM_OLLAMA_MODEL_PATH` for a local
-checkpoint).
+To serve another model, set `AIRLLM_OLLAMA_MODEL_NAME` (and
+`AIRLLM_OLLAMA_MODEL_PATH` for a local checkpoint).
+
+**The embeddings.** Ollama answers with the embedding of a text
+(`POST /api/embed`, and the legacy `POST /api/embeddings`). This service
+generates text — it does not produce embeddings:
+
+```bash
+curl http://127.0.0.1:8000/api/embed -d '{"model": "nomic-embed-text", "input": "a text"}'
+```
+
+```json
+{
+  "error": "This service generates text; it does not produce embeddings."
+}
+```
 
 ### Chatting
 

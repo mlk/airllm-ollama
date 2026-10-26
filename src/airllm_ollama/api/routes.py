@@ -33,6 +33,9 @@ from airllm_ollama.schemas.version import VersionResponse
 
 api_router = APIRouter()
 
+# The reason why the embedding endpoints are not implemented.
+EMBEDDINGS_ERROR = "This service generates text; it does not produce embeddings."
+
 # The capabilities of the served model.
 CAPABILITIES = ["completion"]
 
@@ -335,6 +338,36 @@ def _parameters(settings: Settings) -> str:
 
 
 @api_router.post(
+    "/api/embed",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
+async def embed() -> JSONResponse:
+    """Answer the embeddings of the inputs, as ``POST /api/embed`` does in Ollama.
+
+    This service generates text — it does not produce embeddings. The endpoint
+    exists so that a client gets a clear answer instead of a "not found".
+    """
+    return _not_implemented(EMBEDDINGS_ERROR)
+
+
+@api_router.post(
+    "/api/embeddings",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
+async def embeddings() -> JSONResponse:
+    """Answer the embedding of a prompt, as ``POST /api/embeddings`` does in Ollama.
+
+    The legacy endpoint, superseded by ``/api/embed``. This service generates
+    text — it does not produce embeddings.
+    """
+    return _not_implemented(EMBEDDINGS_ERROR)
+
+
+@api_router.post(
     "/api/pull",
     status_code=NOT_IMPLEMENTED,
     responses=NOT_IMPLEMENTED_RESPONSE,
@@ -347,7 +380,7 @@ async def pull() -> JSONResponse:
     models. The endpoint exists so that a client gets a clear answer instead
     of a "not found".
     """
-    return _not_implemented("pull")
+    return _not_implemented(_model_management_error("pull"))
 
 
 @api_router.post(
@@ -362,7 +395,7 @@ async def push() -> JSONResponse:
     This service serves a single, pre-configured model — it cannot push
     models.
     """
-    return _not_implemented("push")
+    return _not_implemented(_model_management_error("push"))
 
 
 @api_router.post(
@@ -377,7 +410,7 @@ async def create() -> JSONResponse:
     This service serves a single, pre-configured model — it cannot create
     models.
     """
-    return _not_implemented("create")
+    return _not_implemented(_model_management_error("create"))
 
 
 @api_router.post(
@@ -392,7 +425,7 @@ async def copy() -> JSONResponse:
     This service serves a single, pre-configured model — it cannot copy
     models.
     """
-    return _not_implemented("copy")
+    return _not_implemented(_model_management_error("copy"))
 
 
 @api_router.delete(
@@ -407,7 +440,7 @@ async def delete() -> JSONResponse:
     This service serves a single, pre-configured model — it cannot delete
     models.
     """
-    return _not_implemented("delete")
+    return _not_implemented(_model_management_error("delete"))
 
 
 def _timestamp(moment: datetime) -> str:
@@ -415,21 +448,28 @@ def _timestamp(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
-def _not_implemented(action: str) -> JSONResponse:
-    """Return the answer of a model management endpoint this service lacks.
+def _not_implemented(reason: str) -> JSONResponse:
+    """Return the answer of an endpoint this service does not implement.
+
+    Args:
+        reason: The reason of the answer, in a full sentence.
+
+    Returns:
+        The answer with the status code ``501``.
+    """
+    return JSONResponse(status_code=NOT_IMPLEMENTED, content={"error": reason})
+
+
+def _model_management_error(action: str) -> str:
+    """Return the reason why a model management endpoint is not implemented.
 
     Args:
         action: The action of the endpoint, e.g. ``pull``.
 
     Returns:
-        The answer with the status code ``501``.
+        The message of the error.
     """
-    return JSONResponse(
-        status_code=NOT_IMPLEMENTED,
-        content={
-            "error": (
-                "This service serves a single, pre-configured model "
-                f"(AIRLLM_OLLAMA_MODEL_NAME); it cannot {action} models."
-            )
-        },
+    return (
+        "This service serves a single, pre-configured model "
+        f"(AIRLLM_OLLAMA_MODEL_NAME); it cannot {action} models."
     )

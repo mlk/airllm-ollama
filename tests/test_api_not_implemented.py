@@ -1,7 +1,8 @@
-"""Tests for the model management endpoints of the Ollama API.
+"""Tests for the endpoints of the Ollama API that this service does not implement.
 
-The service serves a single, pre-configured model, so the endpoints that would
-manage a model registry answer with "not implemented" instead of "not found".
+The service serves a single, pre-configured model and generates text, so the
+endpoints that would manage a model registry or produce embeddings answer with
+"not implemented" instead of "not found".
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ MODEL_ENDPOINTS = [
     ("post", "/api/copy"),
     ("delete", "/api/delete"),
 ]
+
+# The endpoints of Ollama that produce embeddings.
+EMBEDDING_ENDPOINTS = ["/api/embed", "/api/embeddings"]
 
 
 @pytest.mark.parametrize(("method", "path"), MODEL_ENDPOINTS)
@@ -64,6 +68,26 @@ def test_the_error_of_the_endpoints_is_documented(
     response = schema["paths"][path][method.lower()]["responses"]["501"]
     reference = response["content"]["application/json"]["schema"]["$ref"]
     assert reference == "#/components/schemas/ErrorBody"
+
+
+@pytest.mark.parametrize("path", EMBEDDING_ENDPOINTS)
+def test_an_embedding_endpoint_is_not_implemented(client: TestClient, path: str) -> None:
+    """The service generates text, it does not produce embeddings."""
+    response = client.post(path, json={"model": "some-model", "input": "a text"})
+
+    assert response.status_code == 501
+    assert response.json() == {
+        "error": "This service generates text; it does not produce embeddings."
+    }
+
+
+def test_the_embedding_endpoints_are_documented(client: TestClient) -> None:
+    """The endpoints are part of the OpenAPI schema."""
+    paths = client.get("/openapi.json").json()["paths"]
+
+    for path in EMBEDDING_ENDPOINTS:
+        assert path in paths
+        assert "501" in paths[path]["post"]["responses"]
 
 
 def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
