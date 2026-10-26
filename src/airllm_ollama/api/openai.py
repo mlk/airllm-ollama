@@ -7,11 +7,12 @@ serves a single model, so the list has exactly one entry.
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Request
@@ -19,7 +20,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import AirLLMEngine, get_engine, model_names_match
+from airllm_ollama.decision import (
+    CHOICE,
+    FALSE,
+    NOUL,
+    SCORE,
+    TRUE,
+    best,
+    build_prompt,
+    confidence,
+    normalize,
+    score,
+)
+from airllm_ollama.engine import AirLLMEngine, Decision, get_engine, model_names_match
 from airllm_ollama.model_metadata import collect_metadata
 from airllm_ollama.options import (
     StopSequenceFilter,
@@ -29,6 +42,12 @@ from airllm_ollama.options import (
 )
 from airllm_ollama.options import done_reason as generation_done_reason
 from airllm_ollama.schemas.generate import GenerateOptions
+from airllm_ollama.schemas.ollama import (
+    SystemOneQuestion,
+    SystemOneRequest,
+    SystemOneResponse,
+    SystemOneUsage,
+)
 from airllm_ollama.schemas.openai import (
     AssistantMessage,
     ChatCompletion,
@@ -114,6 +133,167 @@ async def embeddings() -> None:
         status_code=NOT_IMPLEMENTED,
         code="not_implemented",
     )
+
+
+@openai_router.post("/systemone", response_model=SystemOneResponse, tags=["openai"])
+async def systemone(request: SystemOneRequest) -> SystemOneResponse:
+    """Answer the questions of the request, as ``POST /v1/systemone`` does in Ollama.
+
+    Every question is asked separately: the model is asked once per question,
+    with the state and the candidates of that question, and the probabilities
+    of the candidates become the answer.
+
+    Args:
+        request: The request of the client.
+
+    Returns:
+        The answers of the questions.
+
+    Raises:
+        OpenAIError: If the client asked for another model, if the request
+            cannot be answered or if the model failed.
+    """
+    settings = get_settings()
+    if not model_names_match(request.model, settings.model_name):
+        raise OpenAIError(
+            f"Model '{request.model}' not found. Server only supports '{settings.model_name}'.",
+            status_code=400,
+            param="model",
+            code="model_not_found",
+        )
+    if request.images:
+        raise OpenAIError(
+            "This service cannot judge images; they need a checkpoint with a projector.",
+            status_code=400,
+            param="images",
+            code="unsupported",
+        )
+    engine = get_engine()
+    keep_alive = parse_keep_alive(
+        str(request.keep_alive) if request.keep_alive is not None else settings.keep_alive
+    )
+    answers: dict[str, dict[str, Any]] = {}
+    input_tokens = 0
+    output_tokens = 0
+    for name, question in request.questions.items():
+        candidates = _candidates(question)
+        prompt = build_prompt(
+            settings.decision_template,
+            _state(request.state, question.instructions),
+            candidates,
+        )
+        decision = await run_in_threadpool(engine.decide, prompt, candidates, model=request.model)
+        answers[name] = _answer(question, decision)
+        input_tokens += decision.prompt_tokens
+        output_tokens += 1
+    if keep_alive is not None:
+        engine.schedule_unload(keep_alive)
+    return SystemOneResponse(
+        model=settings.model_name,
+        answers=answers,
+        usage=SystemOneUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+    )
+
+
+def _candidates(question: SystemOneQuestion) -> list[str]:
+    """Return the candidates of a question.
+
+    Args:
+        question: The question of the client.
+
+    Returns:
+        The candidates the model chooses from.
+
+    Raises:
+        OpenAIError: If the question is not one Ollama knows.
+    """
+    if question.type == CHOICE:
+        criteria = question.criteria
+        if not isinstance(criteria, dict) or not criteria:
+            raise OpenAIError(
+                "A choice needs the options it chooses from.",
+                status_code=400,
+                param="questions",
+                code="invalid_request",
+            )
+        return list(criteria)
+    if question.type == NOUL:
+        return [FALSE, TRUE]
+    if question.type == SCORE:
+        criteria = question.criteria
+        if not isinstance(criteria, list) or not criteria:
+            raise OpenAIError(
+                "A score needs the levels of its scale.",
+                status_code=400,
+                param="questions",
+                code="invalid_request",
+            )
+        return list(criteria)
+    raise OpenAIError(
+        f"'{question.type}' is not a question type Ollama knows.",
+        status_code=400,
+        param="questions",
+        code="invalid_request",
+    )
+
+
+def _state(state: str | dict[str, Any] | list[Any], instructions: str) -> str:
+    """Return the text a question is about.
+
+    The state is serialized as JSON text when it is not a string, and the
+    instructions of the question come first.
+
+    Args:
+        state: The state of the request.
+        instructions: The instructions of the question.
+
+    Returns:
+        The text of the question.
+    """
+    text = state if isinstance(state, str) else json.dumps(state)
+    return f"{instructions}\n\n{text}"
+
+
+def _answer(question: SystemOneQuestion, decision: Decision) -> dict[str, Any]:
+    """Return the answer of a question.
+
+    Args:
+        question: The question of the client.
+        decision: The probabilities the model answered with.
+
+    Returns:
+        The answer, in the shape Ollama reports it.
+    """
+    probabilities = _rounded(normalize(decision.probabilities))
+    if question.type == NOUL:
+        return {"type": NOUL, "noul": probabilities.get(TRUE, 0.0)}
+    if question.type == SCORE:
+        levels = list(probabilities)
+        return {
+            "type": SCORE,
+            "score": score(probabilities, levels),
+            "legend": {str(index): level for index, level in enumerate(levels)},
+            "probabilities": {
+                str(index): probability for index, probability in enumerate(probabilities.values())
+            },
+            "confidence": _rounded_value(confidence(probabilities)),
+        }
+    return {
+        "type": CHOICE,
+        "choice": best(probabilities),
+        "probabilities": probabilities,
+        "confidence": _rounded_value(confidence(probabilities)),
+    }
+
+
+def _rounded(probabilities: Mapping[str, float]) -> dict[str, float]:
+    """Round the probabilities, the way Ollama reports them."""
+    return {name: round(value, 4) for name, value in probabilities.items()}
+
+
+def _rounded_value(value: float) -> float:
+    """Round a single number, the way Ollama reports it."""
+    return round(value, 4)
 
 
 @openai_router.get("/models", response_model=ModelList)

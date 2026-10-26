@@ -6,10 +6,57 @@ with a ``generate`` method.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import cast
 
 TOKEN_IDS = [11, 22, 33]
+
+
+class FakeInputs(dict[str, object]):
+    """The tokenized inputs of the fake tokenizer."""
+
+    def to(self, device: str) -> FakeInputs:
+        """Pretend to move the inputs to a device."""
+        return self
+
+
+class FakeLogits:
+    """The logits of a fake forward pass."""
+
+    def __init__(self, probabilities: dict[int, float] | None = None) -> None:
+        """Create the logits of the fake pass.
+
+        Args:
+            probabilities: The probability of every token.
+        """
+        self.probabilities = probabilities or {}
+
+    def __getitem__(self, index: object) -> FakeLogits:
+        """Return the last position, or the probability of a single token."""
+        if isinstance(index, tuple):
+            return self
+        token = index if isinstance(index, int) else 0
+        return FakeLogits({token: self.probabilities.get(token, 0.0)})
+
+    def softmax(self, dim: int) -> FakeLogits:
+        """Return the softmax of the logits."""
+        return self
+
+    def __float__(self) -> float:
+        """Return the probability of the token."""
+        return next(iter(self.probabilities.values()), 0.0)
+
+
+class FakeOutput:
+    """The output of a fake forward pass."""
+
+    def __init__(self, probabilities: dict[int, float] | None = None) -> None:
+        """Create the output of the fake pass.
+
+        Args:
+            probabilities: The probability of every token.
+        """
+        self.logits = FakeLogits(probabilities or {})
 
 
 class FakeTokenizer:
@@ -23,12 +70,12 @@ class FakeTokenizer:
         self.template = template
         self.renderings: list[list[dict[str, str]]] = []
 
-    def __call__(self, text: str, **kwargs: object) -> Mapping[str, object]:
+    def __call__(self, text: str, **kwargs: object) -> FakeInputs:
         """Return fake token ids for ``text``."""
         self.prompts.append(text)
         self.tokenizations.append(dict(kwargs))
         ids = self.token_ids(text, **kwargs)
-        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+        return FakeInputs({"input_ids": ids, "attention_mask": [1] * len(ids)})
 
     def token_ids(self, text: str, **kwargs: object) -> list[int]:
         """Return the token ids of ``text``.
@@ -124,6 +171,7 @@ class FakeModel:
         self.output = list(TOKEN_IDS) if output is None else output
         self.chunks = chunks or []
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.forwards: list[dict[str, object]] = []
 
     def generate(self, *args: object, **kwargs: object) -> object:
         """Record the call, stream the chunks and return the canned output."""
@@ -134,6 +182,11 @@ class FakeModel:
             if put is not None:
                 for chunk in self.chunks:
                     put(chunk)
+        return self.output
+
+    def forward(self, *args: object, **kwargs: object) -> object:
+        """Record the forward pass and return the canned output."""
+        self.forwards.append(dict(kwargs))
         return self.output
 
 

@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from types import ModuleType
 
@@ -36,6 +37,7 @@ from fakes import (
     TOKEN_IDS,
     BosTokenizer,
     FakeModel,
+    FakeOutput,
     FakeTokenizer,
     RecordingFactory,
     SystemRoleTokenizer,
@@ -890,3 +892,70 @@ def test_reset_engine_creates_a_new_instance() -> None:
     second = get_engine()
 
     assert first is not second
+
+
+class FakeTorch(ModuleType):
+    """The part of torch the engine uses — it is an optional dependency."""
+
+    def no_grad(self) -> AbstractContextManager[object]:
+        """Return a context manager that switches the autograd graph off."""
+        return nullcontext()
+
+
+@pytest.fixture
+def fake_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend that torch is installed."""
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch("torch"))
+
+
+class DecisionTokenizer(FakeTokenizer):
+    """Tokenizer double that gives every text its own token."""
+
+    def __init__(self, ids: dict[str, int] | None = None) -> None:
+        """Create the tokenizer.
+
+        Args:
+            ids: The token id of every text.
+        """
+        super().__init__()
+        self.ids = ids or {}
+
+    def token_ids(self, text: str, **kwargs: object) -> list[int]:
+        """Return the token id of the text."""
+        return [self.ids.get(text, 1)]
+
+
+def test_decide_reports_the_probability_of_every_candidate(fake_torch: None) -> None:
+    """The probabilities are read from the logits of the last position."""
+    factory = RecordingFactory()
+    model = factory.model
+    model.tokenizer = DecisionTokenizer({"billing": 101, "bug": 102})
+    model.output = FakeOutput({101: 0.7, 102: 0.3})
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    decision = engine.decide("Context: a ticket", ["billing", "bug"])
+
+    assert decision.probabilities == {"billing": 0.7, "bug": 0.3}
+    assert decision.prompt_tokens == 1
+
+
+def test_decide_asks_the_model_once(fake_torch: None) -> None:
+    """The decision is a single forward pass, without the autoregressive loop."""
+    factory = RecordingFactory()
+    model = factory.model
+    model.tokenizer = DecisionTokenizer({"a": 101})
+    model.output = FakeOutput({101: 1.0})
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    engine.decide("Context: a ticket", ["a"])
+
+    assert len(model.forwards) == 1
+    assert model.calls == []
+
+
+def test_decide_rejects_another_model() -> None:
+    """The model of the client is validated like everywhere else."""
+    engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=RecordingFactory())
+
+    with pytest.raises(ModelMismatchError):
+        engine.decide("Context: a ticket", ["a"], model="other-model")

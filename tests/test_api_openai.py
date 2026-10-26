@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
-from airllm_ollama.engine import GenerationResult, StreamChunk
+from airllm_ollama.engine import Decision, GenerationResult, StreamChunk
 from airllm_ollama.exceptions import ModelInitializationError
 
 MODEL = "test-model"
@@ -715,3 +715,163 @@ def test_the_embeddings_endpoint_is_not_implemented(client: TestClient) -> None:
         "This service generates text; it does not produce embeddings."
     )
     assert payload["error"]["code"] == "not_implemented"
+
+
+@pytest.fixture
+def decision_engine(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> Any:
+    """Patch the engine with a double that answers decisions."""
+    double = mocker.patch("airllm_ollama.api.openai.get_engine")
+
+    def decide(prompt: str, candidates: list[str], *, model: str | None = None) -> Decision:
+        """Answer with a fixed probability for every candidate."""
+        probabilities = dict.fromkeys(candidates, 0.1)
+        probabilities[candidates[0]] = 0.8
+        return Decision(probabilities=probabilities, prompt_tokens=42)
+
+    double.return_value.decide.side_effect = decide
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_NAME", "my-model")
+    get_settings.cache_clear()
+    return double
+
+
+def test_the_decisions_answer_the_questions(client: TestClient, decision_engine: Any) -> None:
+    """Every question is answered with the probabilities of the candidates."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": "Our checkout has returned 500 errors since 9am.",
+            "questions": {
+                "label": {
+                    "type": "choice",
+                    "instructions": "Which label fits this ticket?",
+                    "criteria": {"billing": "Payments and refunds", "bug": "Software errors"},
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model"] == "my-model"
+    answer = payload["answers"]["label"]
+    assert answer["type"] == "choice"
+    assert answer["choice"] == "billing"
+    assert answer["probabilities"] == {"billing": 0.8889, "bug": 0.1111}
+    assert answer["confidence"] == pytest.approx(0.4968, abs=0.0001)
+    assert payload["usage"] == {"input_tokens": 42, "output_tokens": 1}
+
+
+def test_a_noul_is_answered_with_the_probability_of_true(
+    client: TestClient, decision_engine: Any
+) -> None:
+    """A yes/no question reports the probability of the truth."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": "a ticket",
+            "questions": {
+                "refund": {
+                    "type": "noul",
+                    "instructions": "Is a refund requested?",
+                    "criteria": {"false": "No refund", "true": "A refund"},
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    answer = response.json()["answers"]["refund"]
+    assert answer == {"type": "noul", "noul": 0.1111}
+
+
+def test_a_score_is_answered_with_the_average_of_the_levels(
+    client: TestClient, decision_engine: Any
+) -> None:
+    """A score is the weighted average of the zero-based levels."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": "a ticket",
+            "questions": {
+                "urgency": {
+                    "type": "score",
+                    "instructions": "How urgent is it?",
+                    "criteria": ["Routine", "Soon", "Immediate"],
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    answer = response.json()["answers"]["urgency"]
+    assert answer["type"] == "score"
+    assert answer["legend"] == {"0": "Routine", "1": "Soon", "2": "Immediate"}
+    assert answer["probabilities"] == {"0": 0.8, "1": 0.1, "2": 0.1}
+    assert answer["score"] == pytest.approx(0.3)
+
+
+def test_the_decisions_reject_another_model(client: TestClient, decision_engine: Any) -> None:
+    """The model of the client is validated."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "other-model",
+            "state": "a ticket",
+            "questions": {"a": {"type": "noul", "instructions": "?"}},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "model_not_found"
+
+
+def test_the_decisions_reject_an_unknown_question_type(
+    client: TestClient, decision_engine: Any
+) -> None:
+    """Only the question types of Ollama are answered."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": "a ticket",
+            "questions": {"a": {"type": "guess", "instructions": "?"}},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_the_decisions_reject_the_images(client: TestClient, decision_engine: Any) -> None:
+    """The images need a model with vision."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": "a ticket",
+            "images": ["aGk="],
+            "questions": {"a": {"type": "noul", "instructions": "?"}},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "images"
+
+
+def test_the_state_may_be_an_object(client: TestClient, decision_engine: Any) -> None:
+    """A state that is not a string is serialized as JSON text."""
+    response = client.post(
+        "/v1/systemone",
+        json={
+            "model": "my-model",
+            "state": {"ticket": "I was charged twice"},
+            "questions": {"a": {"type": "noul", "instructions": "?"}},
+        },
+    )
+
+    assert response.status_code == 200
+    prompt = decision_engine.return_value.decide.call_args[0][0]
+    assert "I was charged twice" in prompt
