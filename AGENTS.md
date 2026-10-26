@@ -101,6 +101,12 @@ together.
   `TYPE_CHECKING` guard, and tests must mock the engine.
 * `src/airllm_ollama/config.py` uses `get_settings()` with an `lru_cache`. Tests that
   change environment variables must call `get_settings.cache_clear()` afterwards.
+* The version of the package is derived from the **git tags** by `hatch-vcs`:
+  `pyproject.toml` has no `version`, and `src/airllm_ollama/_version.py` is
+  written when the package is built (it is gitignored). A release is a tag —
+  `git tag 0.2.0 && git push origin 0.2.0`; the README describes the rest.
+  `uv lock` records the version as *dynamic*, so the lock file does not have to
+  be updated for a new release.
 * The `review` job (JetBrains Junie) uses the **free** model of the account — the
   workflow pins no `model`. When the job fails with *"Insufficient account
   balance"*, the account is out of credits; the quality gates still decide, the
@@ -122,7 +128,7 @@ src/airllm_ollama/
 ├── options.py         # translation of Ollama's options + stop sequence filter
 ├── schemas/           # pydantic request/response models
 ├── streaming.py       # streamer turning the generated tokens into text
-└── version.py         # __version__ (must match pyproject.toml version)
+└── version.py         # __version__ (derived from the git tags by hatch-vcs)
 ```
 
 ### Endpoints (issue #3, done)

@@ -9,6 +9,9 @@ dist/
 *.egg-info/
 .eggs/
 
+# The version file, written by hatch-vcs when the package is built
+src/airllm_ollama/_version.py
+
 # Virtual environments
 .venv/
 venv/

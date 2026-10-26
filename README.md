@@ -574,6 +574,44 @@ uv run mypy .                # static type checking (strict)
 uv run pytest -q             # tests + coverage gate
 ```
 
+### Creating a release
+
+The version of the package is the **git tag** — there is no version in
+`pyproject.toml` to keep up to date. [hatch-vcs](https://github.com/ofek/hatch-vcs)
+derives it from the tags when the package is built.
+
+```bash
+# 1. Make sure the working copy is clean and the tests pass
+git status
+uv run pytest -q
+
+# 2. Tag the release — the tag is the version
+git tag 0.2.0
+git push origin 0.2.0
+
+# 3. Build the artifacts
+uv build
+```
+
+The tag becomes the version of the release: `0.2.0` is the release `0.2.0`
+(a `v` prefix — `v0.2.0` — works as well). The artifacts are named after it:
+
+```
+dist/airllm_ollama-0.2.0-py3-none-any.whl
+dist/airllm_ollama-0.2.0.tar.gz
+```
+
+A commit **after** the tag gets a development version (`0.2.1.dev0+…`), so a
+build from a checkout is never mistaken for a release. The version of a
+checkout is:
+
+```bash
+uv run python -c "import airllm_ollama; print(airllm_ollama.__version__)"
+```
+
+The CI runs the quality gates; it does not publish anything. Build the
+artifacts locally with `uv build` and upload them wherever they should go.
+
 ### Project layout
 
 ```
@@ -590,7 +628,7 @@ src/airllm_ollama/
 ├── options.py         # translation of Ollama's options
 ├── schemas/           # pydantic request/response models
 ├── streaming.py       # streamer turning the generated tokens into text
-└── version.py         # package version
+└── version.py         # package version (derived from the git tags)
 tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml
 ```
