@@ -89,7 +89,9 @@ def confidence(probabilities: Mapping[str, float]) -> float:
     if len(values) < 2:
         return 1.0
     entropy = -sum(value * math.log(value) for value in values if value > 0)
-    return 1.0 - entropy / math.log(len(values))
+    concentration = 1.0 - entropy / math.log(len(values))
+    # The rounding of the probabilities can push the value out of the range.
+    return max(0.0, min(1.0, concentration))
 
 
 def score(probabilities: Mapping[str, float], levels: Sequence[str]) -> float:

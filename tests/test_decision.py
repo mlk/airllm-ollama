@@ -81,3 +81,8 @@ def test_the_score_follows_the_order_of_the_levels() -> None:
 def test_a_level_without_a_probability_counts_as_zero() -> None:
     """A level the model did not answer for does not change the score."""
     assert score({"low": 1.0}, ["low", "high"]) == pytest.approx(0.0)
+
+
+def test_the_confidence_stays_between_zero_and_one() -> None:
+    """The rounding of the probabilities cannot push it out of the range."""
+    assert 0.0 <= confidence({"a": 0.3333, "b": 0.3333, "c": 0.3334}) <= 1.0
