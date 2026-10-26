@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from types import ModuleType
 
 import pytest
@@ -402,6 +403,38 @@ def test_cancel_scheduled_unload_keeps_the_model_loaded() -> None:
     time.sleep(0.3)
 
     assert engine.is_loaded is True
+
+
+def test_a_model_without_a_scheduled_unload_has_no_unload_moment() -> None:
+    """Without a scheduled unload there is no moment to report."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+
+    assert engine.unload_at is None
+
+
+def test_the_unload_moment_is_reported() -> None:
+    """The engine knows when it will unload the model."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+    engine.schedule_unload(60)
+
+    unload_at = engine.unload_at
+    assert unload_at is not None
+    assert unload_at > datetime.now(UTC)
+
+
+def test_the_unload_moment_is_forgotten_after_the_unload() -> None:
+    """A model that was unloaded has no unload moment any more."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    engine.generate("hi")
+    engine.schedule_unload(0.05)
+
+    assert _wait_until_unloaded(engine) is True
+    assert engine.unload_at is None
 
 
 def test_generate_chat_renders_the_history_and_generates() -> None:

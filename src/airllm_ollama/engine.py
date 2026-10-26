@@ -238,7 +238,9 @@ class AirLLMEngine:
         self._load_duration_ns = 0
         self._load_lock = threading.Lock()
         self._generation_lock = threading.Lock()
-        self._unload_lock = threading.Lock()
+        # A re-entrant lock: `schedule_unload()` holds it while it unloads
+        # the model.
+        self._unload_lock = threading.RLock()
         self._unload_timer: threading.Timer | None = None
         self._unload_at: datetime | None = None
 
@@ -293,7 +295,8 @@ class AirLLMEngine:
         """
         with self._generation_lock, self._load_lock:
             self._model = None
-        self._unload_at = None
+        with self._unload_lock:
+            self._unload_at = None
 
     def schedule_unload(self, delay_seconds: float) -> None:
         """Unload the model once it has been idle for ``delay_seconds``.
