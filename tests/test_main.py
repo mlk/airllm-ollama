@@ -18,6 +18,13 @@ def test_package_version_matches_distribution_metadata() -> None:
     assert distribution_version("airllm-ollama") == __version__
 
 
+def test_the_version_is_written_by_the_build() -> None:
+    """The build writes the version of the tags into the package."""
+    from airllm_ollama import _version
+
+    assert _version.__version__ == __version__
+
+
 def test_create_app_returns_fastapi_instance() -> None:
     application = create_app()
 

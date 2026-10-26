@@ -628,7 +628,8 @@ src/airllm_ollama/
 ├── options.py         # translation of Ollama's options
 ├── schemas/           # pydantic request/response models
 ├── streaming.py       # streamer turning the generated tokens into text
-└── version.py         # package version (derived from the git tags)
+├── version.py         # package version (derived from the git tags)
+└── _version.py        # the version, written by the build (gitignored)
 tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml
 ```
