@@ -87,7 +87,9 @@ def test_the_embedding_endpoints_are_documented(client: TestClient) -> None:
 
     for path in EMBEDDING_ENDPOINTS:
         assert path in paths
-        assert "501" in paths[path]["post"]["responses"]
+        response = paths[path]["post"]["responses"]["501"]
+        reference = response["content"]["application/json"]["schema"]["$ref"]
+        assert reference == "#/components/schemas/ErrorBody"
 
 
 def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
