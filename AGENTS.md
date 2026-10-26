@@ -169,8 +169,14 @@ src/airllm_ollama/
   lazily, so the list is empty until the first request. The `expires_at` is the
   moment the model will be unloaded (`engine.unload_at`), the `size_vram` is `0`
   because AirLLM streams the model layer by layer.
-* `capabilities` is currently hardcoded to `["completion"]` — extend it when
-  the chat/embedding endpoints land (issues #4/#5).
+* The `capabilities` of the served model are `["completion"]`, and they live in
+  one place (`schemas/tags.py`, `CAPABILITIES`) — `/api/tags` and `/api/show`
+  report the same list. The service generates text; the chat endpoint is a
+  completion, Ollama has **no** `chat` capability. The other capabilities of
+  Ollama (`tools`, `vision`, `embedding`, `decision`, …) come with the features
+  that are not implemented yet — `tools` with the tool calls (#16),
+  `embedding` with the embeddings (#64), `decision` with the decision models
+  (#68).
 * The model management endpoints of Ollama (`/api/pull`, `/api/push`,
   `/api/create`, `/api/copy`, `/api/delete`) are exposed, but they always
   answer `501` with the Ollama error format: this service serves a single,

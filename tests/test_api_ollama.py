@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
+from airllm_ollama.schemas.tags import CAPABILITIES
 
 
 @pytest.fixture
@@ -99,6 +100,19 @@ def test_api_tags_reports_the_context_length(client: TestClient) -> None:
     response = client.get("/api/tags")
 
     assert response.json()["models"][0]["details"]["context_length"] == 512
+
+
+def test_both_endpoints_report_the_same_capabilities(client: TestClient) -> None:
+    """The capabilities of the model are reported in one place."""
+    tags = client.get("/api/tags").json()["models"][0]["capabilities"]
+    show = client.post("/api/show", json={"model": get_settings().model_name}).json()[
+        "capabilities"
+    ]
+
+    assert tags == show == CAPABILITIES
+    # The service generates text; the chat endpoint is a completion, Ollama has
+    # no "chat" capability.
+    assert CAPABILITIES == ["completion"]
 
 
 def test_api_tags_reports_local_checkpoint_metadata(

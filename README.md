@@ -219,6 +219,11 @@ curl http://127.0.0.1:8000/api/tags
 safetensors header). Nothing is ever downloaded to answer it; a model that has
 not been fetched yet is listed with empty metadata.
 
+The `capabilities` of the model are `["completion"]`: the service generates
+text, and the chat endpoint is a completion — Ollama has no `chat` capability.
+The other capabilities (`tools`, `vision`, `embedding`, `decision`) come with
+the features that are not implemented yet.
+
 `POST /api/show` answers the details of that model, in the shape Ollama uses:
 
 ```bash

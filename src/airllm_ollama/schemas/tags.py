@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+# The capabilities of the served model. It generates text, and the chat
+# endpoint is a completion — Ollama has no "chat" capability. The others come
+# with the features that are not implemented yet: "tools" (issue #16),
+# "embedding" (issue #64), "decision" (issue #68).
+CAPABILITIES = ["completion"]
+
 
 class ModelDetails(BaseModel):
     """Details about a served model."""
@@ -30,7 +36,7 @@ class ModelInfo(BaseModel):
     size: int
     digest: str
     details: ModelDetails = Field(default_factory=ModelDetails)
-    capabilities: list[str] = Field(default_factory=lambda: ["completion"])
+    capabilities: list[str] = Field(default_factory=lambda: list(CAPABILITIES))
 
 
 class TagsResponse(BaseModel):

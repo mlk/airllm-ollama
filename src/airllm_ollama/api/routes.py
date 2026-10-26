@@ -28,16 +28,13 @@ from airllm_ollama.schemas.health import HealthResponse
 from airllm_ollama.schemas.ollama import ErrorBody
 from airllm_ollama.schemas.ps import PsResponse, RunningModel
 from airllm_ollama.schemas.show import ShowRequest, ShowResponse
-from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
+from airllm_ollama.schemas.tags import CAPABILITIES, ModelDetails, ModelInfo, TagsResponse
 from airllm_ollama.schemas.version import VersionResponse
 
 api_router = APIRouter()
 
 # The reason why the embedding endpoints are not implemented.
 EMBEDDINGS_ERROR = "This service generates text; it does not produce embeddings."
-
-# The capabilities of the served model.
-CAPABILITIES = ["completion"]
 
 # The model management endpoints of Ollama are not implemented: this service
 # serves a single, pre-configured model.
