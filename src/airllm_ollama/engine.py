@@ -861,8 +861,11 @@ def _candidate_probability(probabilities: Tensor, model: AirLLMModelLike, candid
         The probability of the candidate.
     """
     encoded = model.tokenizer(candidate, add_special_tokens=False)["input_ids"]
-    token = cast("list[int]", encoded)[0]
-    return float(probabilities[token])
+    tokens = cast("list[int]", encoded)
+    if not tokens:
+        # A candidate the tokenizer does not know has no probability.
+        return 0.0
+    return float(probabilities[tokens[0]])
 
 
 def _input_tokens(encoded: Mapping[str, object]) -> int:

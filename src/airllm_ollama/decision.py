@@ -105,4 +105,4 @@ def score(probabilities: Mapping[str, float], levels: Sequence[str]) -> float:
     Returns:
         The score of the answer.
     """
-    return sum(index * probability for index, probability in enumerate(probabilities.values()))
+    return sum(index * probabilities.get(level, 0.0) for index, level in enumerate(levels))
