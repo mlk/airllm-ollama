@@ -959,3 +959,18 @@ def test_decide_rejects_another_model() -> None:
 
     with pytest.raises(ModelMismatchError):
         engine.decide("Context: a ticket", ["a"], model="other-model")
+
+
+def test_decide_looks_the_candidate_up_with_a_leading_space(
+    fake_torch: None,
+) -> None:
+    """A tokenizer with a prefix space writes the candidate as " billing"."""
+    factory = RecordingFactory()
+    model = factory.model
+    model.tokenizer = DecisionTokenizer({"billing": 101, " billing": 102})
+    model.output = FakeOutput({102: 0.9})
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    decision = engine.decide("Context: a ticket", ["billing"])
+
+    assert decision.probabilities == {"billing": 0.9}

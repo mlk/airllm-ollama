@@ -86,3 +86,10 @@ def test_a_level_without_a_probability_counts_as_zero() -> None:
 def test_the_confidence_stays_between_zero_and_one() -> None:
     """The rounding of the probabilities cannot push it out of the range."""
     assert 0.0 <= confidence({"a": 0.3333, "b": 0.3333, "c": 0.3334}) <= 1.0
+
+
+def test_the_candidates_may_be_formatted_as_json() -> None:
+    """A template that needs a JSON array can ask for one."""
+    prompt = build_prompt("Context: {state}\nChoices: {choices_json}", "a ticket", ["a", "b"])
+
+    assert prompt == 'Context: a ticket\nChoices: ["a", "b"]'

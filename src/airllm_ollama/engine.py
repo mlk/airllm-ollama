@@ -860,10 +860,27 @@ def _candidate_probability(probabilities: Tensor, model: AirLLMModelLike, candid
     Returns:
         The probability of the candidate.
     """
-    encoded = model.tokenizer(candidate, add_special_tokens=False)["input_ids"]
+    probability = _token_probability(probabilities, model, candidate)
+    # A tokenizer with a prefix space (SentencePiece, byte level BPE) writes the
+    # candidate as " billing" — the model answers with that token.
+    return max(probability, _token_probability(probabilities, model, f" {candidate}"))
+
+
+def _token_probability(probabilities: Tensor, model: AirLLMModelLike, text: str) -> float:
+    """Return the probability of the first token of a text.
+
+    Args:
+        probabilities: The probabilities of the vocabulary.
+        model: The model that answered.
+        text: The text to look up.
+
+    Returns:
+        The probability of the text, 0 when the tokenizer does not know it.
+    """
+    encoded = model.tokenizer(text, add_special_tokens=False)["input_ids"]
     tokens = cast("list[int]", encoded)
     if not tokens:
-        # A candidate the tokenizer does not know has no probability.
+        # A text the tokenizer does not know has no probability.
         return 0.0
     return float(probabilities[tokens[0]])
 

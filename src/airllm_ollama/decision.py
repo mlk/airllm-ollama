@@ -9,6 +9,7 @@ read from the logits of the last position.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 
@@ -27,7 +28,8 @@ def build_prompt(template: str, state: str, candidates: Sequence[str]) -> str:
 
     Args:
         template: The prompt template of the model, with the placeholders
-            ``{state}`` and ``{choices}``. The newlines are written as ``\n``.
+            ``{state}``, ``{choices}`` and ``{choices_json}``. The newlines are
+            written as ``\n``.
         state: The text the question is about.
         candidates: The candidates the model chooses from.
 
@@ -36,6 +38,7 @@ def build_prompt(template: str, state: str, candidates: Sequence[str]) -> str:
     """
     prompt = template.replace("\\n", "\n")
     prompt = prompt.replace("{state}", state)
+    prompt = prompt.replace("{choices_json}", json.dumps(list(candidates)))
     return prompt.replace("{choices}", str(list(candidates)))
 
 
