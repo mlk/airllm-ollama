@@ -93,3 +93,8 @@ def test_the_candidates_may_be_formatted_as_json() -> None:
     prompt = build_prompt("Context: {state}\nChoices: {choices_json}", "a ticket", ["a", "b"])
 
     assert prompt == 'Context: a ticket\nChoices: ["a", "b"]'
+
+
+def test_a_distribution_without_any_probability_has_no_confidence() -> None:
+    """A candidate the model did not answer for says nothing."""
+    assert confidence({"a": 0.0, "b": 0.0}) == 0.0

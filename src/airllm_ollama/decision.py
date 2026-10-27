@@ -91,6 +91,9 @@ def confidence(probabilities: Mapping[str, float]) -> float:
     values = list(probabilities.values())
     if len(values) < 2:
         return 1.0
+    if sum(values) <= 0:
+        # A distribution without any probability says nothing.
+        return 0.0
     entropy = -sum(value * math.log(value) for value in values if value > 0)
     concentration = 1.0 - entropy / math.log(len(values))
     # The rounding of the probabilities can push the value out of the range.

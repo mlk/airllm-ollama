@@ -850,7 +850,9 @@ def _candidate_probability(probabilities: Tensor, model: AirLLMModelLike, candid
     """Return the probability of a candidate.
 
     The decision models answer with a single token, so the first token of the
-    candidate carries its probability.
+    candidate carries its probability. A candidate that is written with more
+    than one token is an approximation — the decision models of Ollama answer
+    with one word.
 
     Args:
         probabilities: The probabilities of the vocabulary.
