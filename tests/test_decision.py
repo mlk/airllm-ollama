@@ -98,3 +98,10 @@ def test_the_candidates_may_be_formatted_as_json() -> None:
 def test_a_distribution_without_any_probability_has_no_confidence() -> None:
     """A candidate the model did not answer for says nothing."""
     assert confidence({"a": 0.0, "b": 0.0}) == 0.0
+
+
+def test_a_state_may_contain_the_placeholders() -> None:
+    """The state is inserted last, so its content is not replaced again."""
+    prompt = build_prompt(TEMPLATE, "a {choices} ticket", ["billing"])
+
+    assert prompt == "Context: a {choices} ticket\nChoices: ['billing']\nSelected Option:"

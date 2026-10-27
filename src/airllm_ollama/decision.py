@@ -37,9 +37,10 @@ def build_prompt(template: str, state: str, candidates: Sequence[str]) -> str:
         The prompt of the question.
     """
     prompt = template.replace("\\n", "\n")
-    prompt = prompt.replace("{state}", state)
     prompt = prompt.replace("{choices_json}", json.dumps(list(candidates)))
-    return prompt.replace("{choices}", str(list(candidates)))
+    prompt = prompt.replace("{choices}", str(list(candidates)))
+    # The state comes last: it may contain the placeholders itself.
+    return prompt.replace("{state}", state)
 
 
 def normalize(probabilities: Mapping[str, float]) -> dict[str, float]:
