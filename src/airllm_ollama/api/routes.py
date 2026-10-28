@@ -420,7 +420,8 @@ async def push_blob(digest: str) -> JSONResponse:
     """Push a blob, as ``POST /api/blobs/:digest`` does in Ollama.
 
     The blobs are the files a model is created from. This service serves a
-    single, pre-configured model — it stores no blobs.
+    single, pre-configured model — it stores no blobs. The body of the
+    request is not read: the answer comes before the file is transferred.
 
     Args:
         digest: The SHA256 digest of the file the client sends.

@@ -126,5 +126,7 @@ def test_the_blob_endpoints_are_documented(client: TestClient) -> None:
     paths = client.get("/openapi.json").json()["paths"]
 
     assert "/api/blobs/{digest}" in paths
-    assert "501" in paths["/api/blobs/{digest}"]["post"]["responses"]
-    assert "501" in paths["/api/blobs/{digest}"]["head"]["responses"]
+    for method in ("post", "head"):
+        response = paths["/api/blobs/{digest}"][method]["responses"]["501"]
+        reference = response["content"]["application/json"]["schema"]["$ref"]
+        assert reference == "#/components/schemas/ErrorBody"
