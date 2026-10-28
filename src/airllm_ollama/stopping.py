@@ -9,7 +9,29 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping, Sequence
+from types import ModuleType
 from typing import Any, Protocol, cast
+
+# The torch module is imported on the first use and cached: the criterion runs
+# after every generated token, so the import must not be looked up every time.
+_TORCH: ModuleType | None = None
+
+
+def _torch() -> ModuleType:
+    """Return the torch module, importing it on the first use.
+
+    The import is lazy — torch comes with the optional ``airllm`` extra, and
+    the service has to start without it.
+
+    Returns:
+        The torch module.
+    """
+    global _TORCH
+    if _TORCH is None:
+        import torch
+
+        _TORCH = torch
+    return _TORCH
 
 
 class TokenIds(Protocol):
@@ -89,7 +111,7 @@ class StopGeneration:
         Returns:
             A tensor that tells for every sequence whether it has to stop.
         """
-        import torch
+        torch = cast("Any", _torch())
 
         stopped = self.abort.is_set()
         if not stopped and self._sequences:
