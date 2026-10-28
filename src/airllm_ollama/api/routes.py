@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
 from airllm_ollama.config import Settings, get_settings
@@ -411,6 +411,48 @@ async def create() -> JSONResponse:
 
 
 @api_router.post(
+    "/api/blobs/{digest}",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
+async def push_blob(digest: str) -> JSONResponse:
+    """Push a blob, as ``POST /api/blobs/:digest`` does in Ollama.
+
+    The blobs are the files a model is created from. This service serves a
+    single, pre-configured model — it stores no blobs.
+
+    Args:
+        digest: The SHA256 digest of the file the client sends.
+
+    Returns:
+        The answer with the status code ``501``.
+    """
+    return _not_implemented(_blob_error("push"))
+
+
+@api_router.head(
+    "/api/blobs/{digest}",
+    status_code=NOT_IMPLEMENTED,
+    responses=NOT_IMPLEMENTED_RESPONSE,
+    tags=["ollama"],
+)
+async def check_blob(digest: str) -> Response:
+    """Check a blob, as ``HEAD /api/blobs/:digest`` does in Ollama.
+
+    A ``HEAD`` answer has no body, so the status code is the whole answer —
+    the body of the equivalent ``GET`` would carry the message.
+
+    Args:
+        digest: The SHA256 digest of the file the client asks about.
+
+    Returns:
+        The answer with the status code ``501``.
+    """
+    return Response(status_code=NOT_IMPLEMENTED)
+
+
+@api_router.post(
     "/api/copy",
     status_code=NOT_IMPLEMENTED,
     responses=NOT_IMPLEMENTED_RESPONSE,
@@ -443,6 +485,21 @@ async def delete() -> JSONResponse:
 def _timestamp(moment: datetime) -> str:
     """Format a moment the way Ollama formats its timestamps."""
     return moment.isoformat().replace("+00:00", "Z")
+
+
+def _blob_error(action: str) -> str:
+    """Return the reason why a blob endpoint is not implemented.
+
+    Args:
+        action: The action of the endpoint, e.g. ``push``.
+
+    Returns:
+        The message of the error.
+    """
+    return (
+        "This service serves a single, pre-configured model; "
+        f"it cannot {action} the files of a model."
+    )
 
 
 def _not_implemented(reason: str) -> JSONResponse:

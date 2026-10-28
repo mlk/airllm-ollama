@@ -179,6 +179,8 @@ so that the official OpenAI client can be pointed at this service.
 | `POST` | `/api/generate` | Completion, as in Ollama (streaming and non-streaming) |
 | `POST` | `/api/chat` | Chat completion, as in Ollama (streaming and non-streaming) |
 | `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy`, `DELETE /api/delete` | Model management, as in Ollama — always `501`, this service serves a single model |
+| `POST` | `/api/blobs/{digest}` | The files of a model, as in Ollama — always `501`, this service stores no files |
+| `HEAD` | `/api/blobs/{digest}` | The same, without a body — always `501` |
 | `POST` | `/api/embed`, `/api/embeddings` | Embeddings, as in Ollama — always `501`, this service generates text |
 | `GET` | `/v1/models` | The served model, in the OpenAI format |
 | `GET` | `/v1/models/{model_id}` | A single model, in the OpenAI format |
@@ -365,6 +367,22 @@ curl http://127.0.0.1:8000/api/pull -d '{"model": "llama3.2"}'
 
 To serve another model, set `AIRLLM_OLLAMA_MODEL_NAME` (and
 `AIRLLM_OLLAMA_MODEL_PATH` for a local checkpoint).
+
+**The blobs.** Ollama stores the files of a model, so that a model can be
+created from them (`POST /api/blobs/:digest` uploads a file, `HEAD
+/api/blobs/:digest` checks one). This service stores no files:
+
+```bash
+curl http://127.0.0.1:8000/api/blobs/sha256:0123 --data-binary @model.gguf
+```
+
+```json
+{
+  "error": "This service serves a single, pre-configured model; it cannot push the files of a model."
+}
+```
+
+A `HEAD` answer has no body, so the status code is the whole answer there.
 
 **The embeddings.** Ollama answers with the embedding of a text
 (`POST /api/embed`, and the legacy `POST /api/embeddings`). This service
