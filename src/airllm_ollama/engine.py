@@ -15,9 +15,10 @@ import importlib.util
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
@@ -50,6 +51,18 @@ class StreamChunk:
     result: GenerationResult | None = None
 
 
+@dataclass(frozen=True)
+class Decision:
+    """The probabilities of the candidates of a decision.
+
+    The probabilities are normalized over the candidates, the way Ollama
+    reports them.
+    """
+
+    probabilities: dict[str, float]
+    prompt_tokens: int = 0
+
+
 def is_airllm_installed() -> bool:
     """Return whether the optional AirLLM runtime is available.
 
@@ -74,6 +87,22 @@ class TokenizerLike(Protocol):
         ...
 
 
+class Tensor(Protocol):
+    """A tensor of a model."""
+
+    def softmax(self, dim: int) -> Tensor:
+        """Return the softmax of the tensor."""
+        ...
+
+    def __getitem__(self, index: object) -> Tensor:
+        """Return a part of the tensor."""
+        ...
+
+    def __float__(self) -> float:
+        """Return the value of the tensor."""
+        ...
+
+
 class AirLLMModelLike(Protocol):
     """Minimal surface of an AirLLM model used by the engine."""
 
@@ -84,6 +113,10 @@ class AirLLMModelLike(Protocol):
 
     def generate(self, *args: object, **kwargs: object) -> object:
         """Run generation for the given (already tokenized) inputs."""
+        ...
+
+    def forward(self, *args: object, **kwargs: object) -> object:
+        """Run a forward pass for the given (already tokenized) inputs."""
         ...
 
 
@@ -578,6 +611,56 @@ class AirLLMEngine:
             rendered = render_chat(loaded_model.tokenizer, messages)
             yield from self._stream(loaded_model, rendered, started, **kwargs)
 
+    def decide(
+        self,
+        prompt: str,
+        candidates: Sequence[str],
+        *,
+        model: str | None = None,
+    ) -> Decision:
+        """Answer a question with the probability of every candidate.
+
+        The model is asked once — a forward pass without the autoregressive
+        loop — and the probabilities of the candidates are read from the logits
+        of the last position. The decision models answer with a single token,
+        so the first token of a candidate carries its probability.
+
+        Args:
+            prompt: The prompt of the question.
+            candidates: The candidates the model chooses from.
+            model: The model the client asked for. It is validated against the
+                served model and never forwarded to AirLLM.
+
+        Returns:
+            The probability of every candidate.
+
+        Raises:
+            ModelMismatchError: If a mismatching model was requested.
+            ModelInitializationError: If the model could not be loaded or the
+                backend cannot report the probabilities.
+        """
+        self.ensure_model_allowed(model)
+        self.cancel_scheduled_unload()
+        with self._generation_lock:
+            loaded_model = self.load()
+            if is_mlx_backend(loaded_model):
+                raise ModelInitializationError(
+                    "The decision models need the torch backend; the MLX backend "
+                    "cannot report the probabilities of the candidates."
+                )
+            encoded = loaded_model.tokenizer(prompt, return_tensors="pt")
+            inputs = _to_device(encoded, self._settings.device)
+            with _no_grad():
+                outputs = loaded_model.forward(**inputs)
+            probabilities = _probabilities(outputs)
+            return Decision(
+                probabilities={
+                    candidate: _candidate_probability(probabilities, loaded_model, candidate)
+                    for candidate in candidates
+                },
+                prompt_tokens=_input_tokens(encoded),
+            )
+
     def _stream(
         self,
         model: AirLLMModelLike,
@@ -716,6 +799,104 @@ def _encode(tokenizer: TokenizerLike, prompt: RenderedPrompt) -> Mapping[str, ob
         return_tensors="pt",
         add_special_tokens=prompt.add_special_tokens,
     )
+
+
+def _to_device(encoded: Mapping[str, object], device: str) -> Mapping[str, object]:
+    """Move the tokenized inputs to the device of the model.
+
+    The tokenized inputs are a ``BatchEncoding`` — a mapping that knows the
+    device of the model. That is a detail of the runtime, so the cast is the
+    only place where the types of the framework show up.
+
+    Args:
+        encoded: The tokenized inputs.
+        device: The device of the model.
+
+    Returns:
+        The inputs on the device.
+    """
+    moved = cast("Any", encoded).to(device)
+    return dict(cast("Mapping[str, object]", moved))
+
+
+def _no_grad() -> AbstractContextManager[object]:
+    """Return a context manager that switches the autograd graph off.
+
+    The forward pass of a decision model is a single pass — there is nothing
+    to differentiate, so the graph is not needed.
+
+    Returns:
+        The context manager.
+    """
+    import torch
+
+    return cast("AbstractContextManager[object]", torch.no_grad())
+
+
+def _probabilities(outputs: object) -> Tensor:
+    """Return the probabilities of the last position of a forward pass.
+
+    Args:
+        outputs: The output of the forward pass.
+
+    Returns:
+        The softmax of the logits of the last position.
+    """
+    logits = cast("Tensor", cast("Any", outputs).logits)[0, -1, :]
+    return logits.softmax(dim=-1)
+
+
+def _candidate_probability(probabilities: Tensor, model: AirLLMModelLike, candidate: str) -> float:
+    """Return the probability of a candidate.
+
+    The decision models answer with a single token, so the first token of the
+    candidate carries its probability. A candidate that is written with more
+    than one token is an approximation — the decision models of Ollama answer
+    with one word.
+
+    Args:
+        probabilities: The probabilities of the vocabulary.
+        model: The model that answered.
+        candidate: The candidate to look up.
+
+    Returns:
+        The probability of the candidate.
+    """
+    probability = _token_probability(probabilities, model, candidate)
+    # A tokenizer with a prefix space (SentencePiece, byte level BPE) writes the
+    # candidate as " billing" — the model answers with that token.
+    return max(probability, _token_probability(probabilities, model, f" {candidate}"))
+
+
+def _token_probability(probabilities: Tensor, model: AirLLMModelLike, text: str) -> float:
+    """Return the probability of the first token of a text.
+
+    Args:
+        probabilities: The probabilities of the vocabulary.
+        model: The model that answered.
+        text: The text to look up.
+
+    Returns:
+        The probability of the text, 0 when the tokenizer does not know it.
+    """
+    encoded = model.tokenizer(text, add_special_tokens=False)["input_ids"]
+    tokens = cast("list[int]", encoded)
+    if not tokens:
+        # A text the tokenizer does not know has no probability.
+        return 0.0
+    return float(probabilities[tokens[0]])
+
+
+def _input_tokens(encoded: Mapping[str, object]) -> int:
+    """Return the number of tokens of the tokenized inputs.
+
+    Args:
+        encoded: The tokenized inputs.
+
+    Returns:
+        The number of tokens.
+    """
+    return _sequence_length(encoded.get("input_ids"))
 
 
 def is_mlx_backend(model: object) -> bool:

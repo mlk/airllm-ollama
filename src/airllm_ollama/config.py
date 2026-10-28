@@ -15,6 +15,11 @@ ENV_PREFIX = "AIRLLM_OLLAMA_"
 # (see README "Choosing a model") when you need meaningful completions.
 DEFAULT_MODEL_NAME = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
+# The prompt the decision models are trained with: the state the question is
+# about and the candidates the model chooses from. The newlines are written as
+# "\n", so that the template stays a single line in the environment.
+DEFAULT_DECISION_TEMPLATE = "Context: {state}\\nChoices: {choices}\\nSelected Option:"
+
 
 class Settings(BaseSettings):
     """Application settings loaded from the environment.
@@ -52,6 +57,10 @@ class Settings(BaseSettings):
     keep_alive: str = ""
     # Framing of the streaming responses: "ndjson" (like Ollama) or "sse".
     stream_format: str = "ndjson"
+    # The prompt template of the decision models. The placeholders are the
+    # state the question is about and the candidates the model chooses from;
+    # the newlines are written as "\n".
+    decision_template: str = DEFAULT_DECISION_TEMPLATE
 
     @property
     def resolved_model_path(self) -> str:

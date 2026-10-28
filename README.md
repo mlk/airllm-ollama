@@ -157,6 +157,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` | _(empty)_ | Where AirLLM stores the per-layer shards |
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 | `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
+| `AIRLLM_OLLAMA_DECISION_TEMPLATE` | `Context: {state}\nChoices: {choices}\nSelected Option:` | The prompt template of the decision models (`POST /v1/systemone`) |
 
 A `.env` file overrides every one of these values. If yours still sets a
 variable that has a new default, remove the line to pick the default up again.
@@ -184,6 +185,7 @@ so that the official OpenAI client can be pointed at this service.
 | `POST` | `/v1/chat/completions` | Chat completion, in the OpenAI format (streaming and non-streaming) |
 | `POST` | `/v1/completions` | Text completion, in the OpenAI format (streaming and non-streaming) |
 | `POST` | `/v1/embeddings` | Embeddings, in the OpenAI format — always `501`, this service generates text |
+| `POST` | `/v1/systemone` | The decision models — a choice, a yes/no or a score about a text |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 
 ```bash
@@ -548,6 +550,59 @@ curl http://127.0.0.1:8000/v1/completions \
 The legacy API accepts a list of prompts as well — the answer then has one
 choice per prompt, in the same order. With `"stream": true` the answer is a
 stream of Server-Sent Events, the way the OpenAI API streams it.
+
+### The decision models
+
+Ollama answers typed questions about a piece of text with a *decision* model
+(`POST /v1/systemone`): a **choice** between labelled options, a **noul**
+(yes or no) or a **score** on a scale.
+
+```bash
+curl http://127.0.0.1:8000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "vllm-semantic-router/decision-3.0-0.6b",
+        "state": "Our checkout has returned 500 errors since 9am.",
+        "questions": {
+          "label": {
+            "type": "choice",
+            "instructions": "Which label fits this ticket?",
+            "criteria": {
+              "billing": "Payments and refunds",
+              "bug": "Software errors"
+            }
+          }
+        }
+      }'
+```
+
+```json
+{
+  "model": "vllm-semantic-router/decision-3.0-0.6b",
+  "answers": {
+    "label": {
+      "type": "choice",
+      "choice": "bug",
+      "probabilities": {"billing": 0.0125, "bug": 0.9781},
+      "confidence": 0.8906
+    }
+  },
+  "usage": {"input_tokens": 174, "output_tokens": 1}
+}
+```
+
+The model is asked **once** per question — a forward pass without the
+autoregressive loop — and the probabilities of the candidates are read from the
+logits of the last position. The `confidence` is the concentration of the
+distribution (`1 - H(p) / ln(N)`); it is not a calibrated correctness.
+
+The prompt is the one the model was trained with, and it is configured with
+`AIRLLM_OLLAMA_DECISION_TEMPLATE` — the placeholders are `{state}` (the text
+the question is about) and `{choices}` (the candidates the model chooses from).
+A different decision model needs a different template.
+
+The images are not supported: judging them needs a checkpoint with a projector,
+not only a tokenizer.
 
 ### Verifying a running instance
 

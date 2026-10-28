@@ -120,6 +120,7 @@ src/airllm_ollama/
 ├── __main__.py        # `python -m airllm_ollama` entry point (uvicorn runner)
 ├── api/routes.py      # HTTP routes (api_router)
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
+├── decision.py        # the decision models (the questions and their answers)
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
 ├── health_check.py    # verification of a running instance
@@ -368,6 +369,13 @@ src/airllm_ollama/
 * The generation of the non-streaming answer runs in a thread
   (`starlette.concurrency.run_in_threadpool`): a generation takes minutes, and
   it must not block the event loop of the service.
+* `POST /v1/systemone` (issue #68) answers the questions of a decision model:
+  a *choice* between labelled options, a *noul* (yes or no) or a *score* on a
+  scale. The model is asked **once** per question — a forward pass without the
+  autoregressive loop (`engine.decide()`), and the probabilities of the
+  candidates are read from the logits of the last position. The prompt is the
+  one the model was trained with (`AIRLLM_OLLAMA_DECISION_TEMPLATE`). The
+  path needs the torch backend: the MLX backend has no `forward()`.
 * The errors of these routes are answered in the **OpenAI** format
   (`{"error": {"message": ..., "type": ..., "param": ..., "code": ...}}`), not
   in the Ollama one: `api.openai.OpenAIError` carries the payload and
