@@ -6,6 +6,7 @@ with a ``generate`` method.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import cast
 
@@ -187,6 +188,28 @@ class FakeModel:
     def forward(self, *args: object, **kwargs: object) -> object:
         """Record the forward pass and return the canned output."""
         self.forwards.append(dict(kwargs))
+        return self.output
+
+
+class AbortableModel(FakeModel):
+    """Model double that streams a chunk and waits for the abort signal.
+
+    It mimics the generation loop of ``transformers``: the model produces a
+    token, checks the stopping criteria and produces the next one. The double
+    stops as soon as the criterion is aborted, the way a real generation does.
+    """
+
+    def generate(self, *args: object, **kwargs: object) -> object:
+        """Stream a chunk and wait until the generation is aborted."""
+        self.calls.append((args, kwargs))
+        streamer = kwargs.get("streamer")
+        put = cast("Callable[[str], None] | None", getattr(streamer, "put", None))
+        if put is not None:
+            put("hello")
+        for criterion in cast("list[object]", kwargs.get("stopping_criteria") or []):
+            abort = getattr(criterion, "abort", None)
+            if abort is not None:
+                cast("threading.Event", abort).wait(timeout=5)
         return self.output
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib.util
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
 
 
@@ -412,6 +413,7 @@ class AirLLMEngine:
         model: str | None = None,
         system: str | None = None,
         raw: bool = False,
+        stop: Sequence[str] = (),
         **kwargs: object,
     ) -> str:
         """Generate text for ``prompt``.
@@ -424,6 +426,8 @@ class AirLLMEngine:
                 served model and never forwarded to AirLLM.
             raw: Whether the prompt is sent unchanged, without the chat
                 template. It is never forwarded to AirLLM.
+            stop: The stop sequences of the request. The generation ends when
+                one of them appears. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -433,7 +437,7 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self._generate(prompt, system, model=model, raw=raw, **kwargs).text
+        return self._generate(prompt, system, model=model, raw=raw, stop=stop, **kwargs).text
 
     def generate_result(
         self,
@@ -442,6 +446,7 @@ class AirLLMEngine:
         model: str | None = None,
         system: str | None = None,
         raw: bool = False,
+        stop: Sequence[str] = (),
         **kwargs: object,
     ) -> GenerationResult:
         """Generate text for ``prompt`` and report the generation statistics.
@@ -454,6 +459,8 @@ class AirLLMEngine:
                 served model and never forwarded to AirLLM.
             raw: Whether the prompt is sent unchanged, without the chat
                 template. It is never forwarded to AirLLM.
+            stop: The stop sequences of the request. The generation ends when
+                one of them appears. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -463,7 +470,7 @@ class AirLLMEngine:
             ModelMismatchError: If a mismatching model was requested.
             ModelInitializationError: If the model could not be loaded.
         """
-        return self._generate(prompt, system, model=model, raw=raw, **kwargs)
+        return self._generate(prompt, system, model=model, raw=raw, stop=stop, **kwargs)
 
     def _generate(
         self,
@@ -473,6 +480,7 @@ class AirLLMEngine:
         *,
         model: str | None = None,
         raw: bool = False,
+        stop: Sequence[str] = (),
         **kwargs: object,
     ) -> GenerationResult:
         """Validate the model, load it, render the prompt and generate."""
@@ -482,13 +490,14 @@ class AirLLMEngine:
             started = time.perf_counter_ns()
             loaded_model = self.load()
             rendered = render_completion(loaded_model.tokenizer, prompt, system, raw)
-            return self._run_prompt(loaded_model, rendered, started, **kwargs)
+            return self._run_prompt(loaded_model, rendered, started, stop=stop, **kwargs)
 
     def generate_chat(
         self,
         messages: Sequence[ChatTurn],
         *,
         model: str | None = None,
+        stop: Sequence[str] = (),
         **kwargs: object,
     ) -> GenerationResult:
         """Render a chat history and generate the assistant's answer.
@@ -500,6 +509,8 @@ class AirLLMEngine:
             messages: The chat history as ``(role, content)`` pairs.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
+            stop: The stop sequences of the request. The generation ends when
+                one of them appears. It is never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -515,18 +526,19 @@ class AirLLMEngine:
             started = time.perf_counter_ns()
             loaded_model = self.load()
             rendered = render_chat(loaded_model.tokenizer, messages)
-            return self._run_prompt(loaded_model, rendered, started, **kwargs)
+            return self._run_prompt(loaded_model, rendered, started, stop=stop, **kwargs)
 
     def _run_prompt(
         self,
         model: AirLLMModelLike,
         prompt: RenderedPrompt,
         started: int,
+        stop: Sequence[str] = (),
         **kwargs: object,
     ) -> GenerationResult:
         """Run a single generation and collect its statistics."""
         prompt_started = time.perf_counter_ns()
-        raw_output, prompt_tokens = self._run(model, prompt, **kwargs)
+        raw_output, prompt_tokens = self._run(model, prompt, stop, **kwargs)
         prompt_duration = time.perf_counter_ns() - prompt_started
         text = self._decode(model, raw_output)
         generated_tokens = self._count_generated_tokens(model, raw_output, prompt_tokens)
@@ -548,8 +560,10 @@ class AirLLMEngine:
         model: str | None = None,
         system: str | None = None,
         raw: bool = False,
+        stop: Sequence[str] = (),
+        abort: threading.Event | None = None,
         **kwargs: object,
-    ) -> Iterator[StreamChunk]:
+    ) -> Generator[StreamChunk, None, None]:
         """Generate text, yielding the chunks as they are produced.
 
         The generation runs in a worker thread, because the model only reports
@@ -564,6 +578,11 @@ class AirLLMEngine:
                 served model and never forwarded to AirLLM.
             raw: Whether the prompt is sent unchanged, without the chat
                 template. It is never forwarded to AirLLM.
+            stop: The stop sequences of the request. The generation ends when
+                one of them appears. It is never forwarded to AirLLM.
+            abort: The event that is set when the client is gone. The
+                generation stops at the next token. It is never forwarded to
+                AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Yields:
@@ -579,21 +598,30 @@ class AirLLMEngine:
             started = time.perf_counter_ns()
             loaded_model = self.load()
             rendered = render_completion(loaded_model.tokenizer, prompt, system, raw)
-            yield from self._stream(loaded_model, rendered, started, **kwargs)
+            yield from self._stream(
+                loaded_model, rendered, started, stop=stop, abort=abort, **kwargs
+            )
 
     def generate_chat_stream(
         self,
         messages: Sequence[ChatTurn],
         *,
         model: str | None = None,
+        stop: Sequence[str] = (),
+        abort: threading.Event | None = None,
         **kwargs: object,
-    ) -> Iterator[StreamChunk]:
+    ) -> Generator[StreamChunk, None, None]:
         """Render a chat history and stream the assistant's answer.
 
         Args:
             messages: The chat history as ``(role, content)`` pairs.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
+            stop: The stop sequences of the request. The generation ends when
+                one of them appears. It is never forwarded to AirLLM.
+            abort: The event that is set when the client is gone. The
+                generation stops at the next token. It is never forwarded to
+                AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Yields:
@@ -609,7 +637,9 @@ class AirLLMEngine:
             started = time.perf_counter_ns()
             loaded_model = self.load()
             rendered = render_chat(loaded_model.tokenizer, messages)
-            yield from self._stream(loaded_model, rendered, started, **kwargs)
+            yield from self._stream(
+                loaded_model, rendered, started, stop=stop, abort=abort, **kwargs
+            )
 
     def decide(
         self,
@@ -666,8 +696,10 @@ class AirLLMEngine:
         model: AirLLMModelLike,
         prompt: RenderedPrompt,
         started: int,
+        stop: Sequence[str] = (),
+        abort: threading.Event | None = None,
         **kwargs: object,
-    ) -> Iterator[StreamChunk]:
+    ) -> Generator[StreamChunk, None, None]:
         """Run a generation and yield its chunks."""
         prompt_started = time.perf_counter_ns()
         encoded = _encode(model.tokenizer, prompt)
@@ -679,6 +711,16 @@ class AirLLMEngine:
         options = self._backend_options(model, kwargs)
         streamer = TextStreamer(model.tokenizer)
         outcome: list[object] = []
+        # The client can be gone before the generation ends. The event tells the
+        # criterion to stop the model at the next token.
+        abort_event = abort if abort is not None else threading.Event()
+        criterion = StopGeneration(
+            model.tokenizer,
+            stop,
+            abort=abort_event,
+            prompt_length=prompt_tokens,
+        )
+        options = {**options, "stopping_criteria": [criterion]}
 
         def run() -> None:
             """Run the generation in the worker thread."""
@@ -705,6 +747,9 @@ class AirLLMEngine:
                 streamed = True
                 yield StreamChunk(text=text)
         finally:
+            # The client is gone (or the answer is complete): tell the model
+            # to stop, so that the worker finishes at the next token.
+            abort_event.set()
             # The model may not be used while it is still generating, so the
             # lock is only released after the worker finished.
             worker.join()
@@ -729,7 +774,11 @@ class AirLLMEngine:
         )
 
     def _run(
-        self, model: AirLLMModelLike, prompt: RenderedPrompt, **kwargs: object
+        self,
+        model: AirLLMModelLike,
+        prompt: RenderedPrompt,
+        stop: Sequence[str] = (),
+        **kwargs: object,
     ) -> tuple[object, int]:
         """Tokenize, generate and return the raw output plus the prompt length."""
         encoded = _encode(model.tokenizer, prompt)
@@ -737,6 +786,11 @@ class AirLLMEngine:
         attention_mask = encoded.get("attention_mask")
         prompt_tokens = _sequence_length(input_ids)
         options = self._backend_options(model, kwargs)
+        if stop:
+            # The stop sequences end the generation, the model stops at the
+            # next token.
+            criterion = StopGeneration(model.tokenizer, stop, prompt_length=prompt_tokens)
+            options = {**options, "stopping_criteria": [criterion]}
         # AirLLM backends accept the token ids positionally; the transformers
         # based one forwards them to `transformers.GenerationMixin.generate`.
         raw_output = model.generate(

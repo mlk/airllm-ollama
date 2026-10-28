@@ -13,6 +13,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from types import ModuleType
+from typing import cast
 
 import pytest
 from pytest_mock import MockerFixture
@@ -33,8 +34,10 @@ from airllm_ollama.engine import (
     reset_engine,
 )
 from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.stopping import StopGeneration
 from fakes import (
     TOKEN_IDS,
+    AbortableModel,
     BosTokenizer,
     FakeModel,
     FakeOutput,
@@ -974,3 +977,71 @@ def test_decide_looks_the_candidate_up_with_a_leading_space(
     decision = engine.decide("Context: a ticket", ["billing"])
 
     assert decision.probabilities == {"billing": 0.9}
+
+
+def test_the_stop_sequences_end_the_generation() -> None:
+    """The criterion that stops at a stop sequence is handed to the model."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    engine.generate("hello", stop=["STOP"])
+
+    _, kwargs = factory.model.calls[0]
+    criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
+    assert len(criteria) == 1
+    assert isinstance(criteria[0], StopGeneration)
+
+
+def test_the_stop_sequences_end_the_stream() -> None:
+    """The streaming path hands the criterion to the model as well."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    list(engine.generate_stream("hello", stop=["STOP"]))
+
+    _, kwargs = factory.model.calls[0]
+    criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
+    assert len(criteria) == 1
+    assert isinstance(criteria[0], StopGeneration)
+
+
+def test_without_a_stop_sequence_the_model_gets_no_criterion() -> None:
+    """A request without a stop sequence generates until the end."""
+    factory = RecordingFactory()
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    engine.generate("hello")
+
+    _, kwargs = factory.model.calls[0]
+    assert "stopping_criteria" not in kwargs
+
+
+def test_a_disconnected_client_stops_the_generation() -> None:
+    """The generation ends when the stream is closed."""
+    factory = RecordingFactory(AbortableModel())
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    stream = engine.generate_stream("hello")
+    next(stream)
+    _, kwargs = factory.model.calls[0]
+    criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
+    criterion = criteria[0]
+    assert criterion.abort.is_set() is False
+
+    stream.close()
+
+    assert criterion.abort.is_set() is True
+
+
+def test_the_caller_stops_the_generation() -> None:
+    """The event of the caller stops the generation."""
+    factory = RecordingFactory(AbortableModel())
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+    abort = threading.Event()
+
+    stream = engine.generate_stream("hello", abort=abort)
+    next(stream)
+    _, kwargs = factory.model.calls[0]
+    criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
+
+    assert criteria[0].abort is abort
