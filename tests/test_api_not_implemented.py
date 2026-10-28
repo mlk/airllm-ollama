@@ -98,3 +98,35 @@ def test_the_ollama_endpoints_still_work(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "models" in response.json()
+
+
+def test_a_blob_cannot_be_pushed(client: TestClient) -> None:
+    """The service stores no files."""
+    response = client.post("/api/blobs/sha256:0123", content=b"a file")
+
+    assert response.status_code == 501
+    assert response.json() == {
+        "error": (
+            "This service serves a single, pre-configured model; "
+            "it cannot push the files of a model."
+        )
+    }
+
+
+def test_a_blob_cannot_be_checked(client: TestClient) -> None:
+    """A HEAD answer has no body, so the status code is the whole answer."""
+    response = client.head("/api/blobs/sha256:0123")
+
+    assert response.status_code == 501
+    assert response.text == ""
+
+
+def test_the_blob_endpoints_are_documented(client: TestClient) -> None:
+    """The endpoints are part of the OpenAPI schema."""
+    paths = client.get("/openapi.json").json()["paths"]
+
+    assert "/api/blobs/{digest}" in paths
+    for method in ("post", "head"):
+        response = paths["/api/blobs/{digest}"][method]["responses"]["501"]
+        reference = response["content"]["application/json"]["schema"]["$ref"]
+        assert reference == "#/components/schemas/ErrorBody"

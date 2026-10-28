@@ -146,6 +146,8 @@ src/airllm_ollama/
 | `POST` | `/api/chat` | `ChatResponse` — Ollama's non-streaming chat shape |
 | `POST` | `/api/pull`, `/api/push`, `/api/create`, `/api/copy` | `501` — Ollama's model management, not implemented |
 | `DELETE` | `/api/delete` | `501` — Ollama's model management, not implemented |
+| `POST` | `/api/blobs/{digest}` | `501` — Ollama's blobs (the files of a model), not implemented |
+| `HEAD` | `/api/blobs/{digest}` | `501` — the same, without a body |
 | `POST` | `/api/embed`, `/api/embeddings` | `501` — Ollama's embeddings, not implemented |
 
 * The response models mirror Ollama 0.40.x (`/api/tags` was verified against a
@@ -183,6 +185,10 @@ src/airllm_ollama/
   answer `501` with the Ollama error format: this service serves a single,
   pre-configured model and has no registry. A client gets a clear answer
   instead of a "not found".
+* The blob endpoints of Ollama (`POST /api/blobs/{digest}` and `HEAD
+  /api/blobs/{digest}`) answer `501` as well: the service stores no files, so
+  a model cannot be created from them (issue #63). A `HEAD` answer has no
+  body, so the status code is the whole answer there.
 * The embedding endpoints of Ollama (`/api/embed` and the legacy
   `/api/embeddings`) answer `501` as well: the service generates text, it does
   not produce embeddings (issue #64). The `embedding` capability is therefore
