@@ -704,6 +704,9 @@ def _text_events(
     stream = _TextStream(id=_text_completion_id(), created=int(time.time()), model=model)
     try:
         for index, prompt in enumerate(prompts):
+            if abort is not None and abort.is_set():
+                # The client is gone: the remaining prompts are not generated.
+                break
             yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
         yield DONE
     finally:

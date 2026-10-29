@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import threading
+from collections.abc import Iterator
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -688,6 +690,31 @@ def test_a_streamed_completion_answers_one_choice_per_prompt(
     events = [line for line in response.text.splitlines() if line]
     chunks = [json.loads(event.removeprefix("data: ")) for event in events[:-1]]
     assert [chunk["choices"][0]["index"] for chunk in chunks] == [0, 0, 1, 1]
+
+
+def test_a_disconnected_client_does_not_generate_the_other_prompts(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The prompts after the disconnect are not generated."""
+
+    def generate(*args: object, **kwargs: object) -> Iterator[StreamChunk]:
+        """Answer the first prompt and disconnect the client."""
+        cast("threading.Event", kwargs["abort"]).set()
+        yield StreamChunk(text="first")
+        yield StreamChunk(
+            text="",
+            result=GenerationResult(text="first", prompt_tokens=2, generated_tokens=1),
+        )
+
+    engine.return_value.generate_stream.side_effect = generate
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": ["one", "two"], "stream": True},
+    )
+
+    assert response.status_code == 200
+    assert engine.return_value.generate_stream.call_count == 1
 
 
 def test_a_streamed_chat_unloads_the_model_afterwards(
