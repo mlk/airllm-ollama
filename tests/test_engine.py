@@ -33,12 +33,17 @@ from airllm_ollama.engine import (
     normalize_model_name,
     reset_engine,
 )
-from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.exceptions import (
+    GenerationError,
+    ModelInitializationError,
+    ModelMismatchError,
+)
 from airllm_ollama.stopping import StopGeneration
 from fakes import (
     TOKEN_IDS,
     AbortableModel,
     BosTokenizer,
+    BrokenModel,
     FakeModel,
     FakeOutput,
     FakeTokenizer,
@@ -979,6 +984,18 @@ def test_decide_looks_the_candidate_up_with_a_leading_space(
     assert decision.probabilities == {"billing": 0.9}
 
 
+def test_a_failed_decision_is_reported() -> None:
+    """A model that fails while it decides is reported, not swallowed."""
+    factory = RecordingFactory(BrokenModel())
+    engine = AirLLMEngine(Settings(model_path="/models/broken"), model_factory=factory)
+
+    with pytest.raises(GenerationError) as failure:
+        engine.decide("Context: a ticket", ["a"])
+
+    assert "failed to decide" in str(failure.value)
+    assert "/models/broken" in str(failure.value)
+
+
 def test_the_stop_sequences_end_the_generation() -> None:
     """The criterion that stops at a stop sequence is handed to the model."""
     factory = RecordingFactory()
@@ -1045,3 +1062,25 @@ def test_the_caller_stops_the_generation() -> None:
     criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
 
     assert criteria[0].abort is abort
+
+
+def test_a_failed_generation_is_reported() -> None:
+    """A model that fails while it generates is reported, not swallowed."""
+    factory = RecordingFactory(BrokenModel())
+    engine = AirLLMEngine(Settings(model_path="/models/broken"), model_factory=factory)
+
+    with pytest.raises(GenerationError) as failure:
+        engine.generate("hello")
+
+    assert "failed to generate" in str(failure.value)
+    # The message names the checkpoint, so that the operator knows the files.
+    assert "/models/broken" in str(failure.value)
+
+
+def test_a_failed_stream_is_reported() -> None:
+    """The failure of the worker thread is raised in the reading thread."""
+    factory = RecordingFactory(BrokenModel())
+    engine = AirLLMEngine(Settings(), model_factory=factory)
+
+    with pytest.raises(GenerationError):
+        list(engine.generate_stream("hello"))

@@ -35,6 +35,7 @@ from airllm_ollama.decision import (
     score,
 )
 from airllm_ollama.engine import AirLLMEngine, Decision, get_engine, model_names_match
+from airllm_ollama.exceptions import GenerationError
 from airllm_ollama.model_metadata import collect_metadata
 from airllm_ollama.options import (
     StopSequenceFilter,
@@ -487,42 +488,66 @@ def _completion_events(
     created = int(time.time())
     stop_filter = StopSequenceFilter(stop)
     first = True
-    for chunk in engine.generate_chat_stream(
-        messages, model=model, stop=stop, abort=abort, **options
-    ):
-        if chunk.result is not None:
-            # The generation is over: the filter releases the tail it held
-            # back, it cannot become a stop sequence any more.
-            yield from _content_event(completion_id, created, model, stop_filter.flush())
-            yield _chunk_event(
-                completion_id,
-                created,
-                model,
-                finish_reason=generation_done_reason(chunk.result, options),
-            )
-            yield DONE
-            return
-        text = stop_filter.feed(chunk.text)
-        if text:
-            yield _chunk_event(
-                completion_id,
-                created,
-                model,
-                content=text,
-                role="assistant" if first else None,
-            )
-            first = False
-        if stop_filter.stopped:
-            # The stop sequence was found: the answer is complete, but the
-            # client still expects the last chunk.
-            yield _chunk_event(completion_id, created, model, finish_reason="stop")
-            yield DONE
-            return
+    try:
+        for chunk in engine.generate_chat_stream(
+            messages, model=model, stop=stop, abort=abort, **options
+        ):
+            if chunk.result is not None:
+                # The generation is over: the filter releases the tail it held
+                # back, it cannot become a stop sequence any more.
+                yield from _content_event(completion_id, created, model, stop_filter.flush())
+                yield _chunk_event(
+                    completion_id,
+                    created,
+                    model,
+                    finish_reason=generation_done_reason(chunk.result, options),
+                )
+                yield DONE
+                return
+            text = stop_filter.feed(chunk.text)
+            if text:
+                yield _chunk_event(
+                    completion_id,
+                    created,
+                    model,
+                    content=text,
+                    role="assistant" if first else None,
+                )
+                first = False
+            if stop_filter.stopped:
+                # The stop sequence was found: the answer is complete, but the
+                # client still expects the last chunk.
+                yield _chunk_event(completion_id, created, model, finish_reason="stop")
+                yield DONE
+                return
+    except GenerationError as exc:
+        # The generation failed: the client gets the error as the last event.
+        # The status code cannot be changed any more, the headers are sent.
+        yield _error_event(str(exc))
+        yield DONE
+        return
     yield from _content_event(completion_id, created, model, stop_filter.flush())
     # The stream ended without the statistics of the generation: the client
     # still expects the last chunk.
     yield _chunk_event(completion_id, created, model, finish_reason="stop")
     yield DONE
+
+
+def _error_event(message: str) -> str:
+    """Render a failed generation as a Server-Sent Event.
+
+    The status code of a stream cannot be changed once the headers are sent,
+    so the error is the last event of the stream — the way the OpenAI API
+    reports it.
+
+    Args:
+        message: The message of the error.
+
+    Returns:
+        The event of the error.
+    """
+    error = ErrorDetail(message=message, type="server_error")
+    return f"data: {json.dumps({'error': error.model_dump()})}\n\n"
 
 
 def _content_event(completion_id: str, created: int, model: str, content: str) -> Iterator[str]:
@@ -707,7 +732,14 @@ def _text_events(
             if abort is not None and abort.is_set():
                 # The client is gone: the remaining prompts are not generated.
                 break
-            yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
+            try:
+                yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
+            except GenerationError as exc:
+                # The generation failed: the remaining prompts would fail the
+                # same way, so the stream ends with the error.
+                yield _error_event(str(exc))
+                yield DONE
+                return
         yield DONE
     finally:
         if keep_alive is not None:

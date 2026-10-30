@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
 from airllm_ollama.api.errors import (
+    generation_error_handler,
     model_initialization_handler,
     model_mismatch_handler,
     validation_error_handler,
@@ -11,7 +12,11 @@ from airllm_ollama.api.errors import (
 from airllm_ollama.api.openai import OpenAIError, openai_error_handler, openai_router
 from airllm_ollama.api.routes import api_router
 from airllm_ollama.config import Settings, get_settings
-from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.exceptions import (
+    GenerationError,
+    ModelInitializationError,
+    ModelMismatchError,
+)
 
 DESCRIPTION = (
     "Ollama-compatible REST API backed by AirLLM layer-wise inference. "
@@ -39,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(openai_router)
     application.add_exception_handler(ModelMismatchError, model_mismatch_handler)
     application.add_exception_handler(ModelInitializationError, model_initialization_handler)
+    application.add_exception_handler(GenerationError, generation_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)
     application.add_exception_handler(OpenAIError, openai_error_handler)
     return application

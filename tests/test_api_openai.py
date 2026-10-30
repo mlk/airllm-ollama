@@ -13,7 +13,8 @@ from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import Decision, GenerationResult, StreamChunk
-from airllm_ollama.exceptions import ModelInitializationError
+from airllm_ollama.exceptions import GenerationError, ModelInitializationError
+from fakes import FailingStream
 
 MODEL = "test-model"
 MESSAGES = [{"role": "user", "content": "why is the sky blue?"}]
@@ -380,6 +381,59 @@ def test_a_stream_loads_the_model_before_the_headers_are_sent(
 
     assert response.status_code == 503
     assert "error" in response.json()
+
+
+def test_a_failed_generation_is_answered_in_the_openai_format(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The OpenAI routes answer a failed generation in their own format."""
+    engine.return_value.generate_chat.side_effect = GenerationError("the checkpoint is broken")
+
+    response = client.post("/v1/chat/completions", json={"model": model, "messages": MESSAGES})
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["message"] == "the checkpoint is broken"
+    assert error["type"] == "server_error"
+
+
+def test_a_streamed_chat_reports_a_failed_generation(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The client gets the error as the last event of the stream."""
+    engine.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: FailingStream(
+        GenerationError("the checkpoint is broken")
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": MESSAGES, "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    error = json.loads(events[-2].removeprefix("data: "))
+    assert error["error"]["message"] == "the checkpoint is broken"
+    assert events[-1] == "data: [DONE]"
+
+
+def test_a_streamed_completion_reports_a_failed_generation(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The client gets the error as the last event of the stream."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: FailingStream(
+        GenerationError("the checkpoint is broken")
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": ["one", "two"], "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    error = json.loads(events[-2].removeprefix("data: "))
+    assert error["error"]["message"] == "the checkpoint is broken"
+    # The remaining prompts would fail the same way: they are not generated.
+    assert engine.return_value.generate_stream.call_count == 1
 
 
 def test_the_model_is_unloaded_after_the_configured_idle_time(

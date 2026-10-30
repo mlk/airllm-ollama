@@ -11,7 +11,11 @@ from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import GenerationResult, StreamChunk
-from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.exceptions import (
+    GenerationError,
+    ModelInitializationError,
+    ModelMismatchError,
+)
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
@@ -154,6 +158,16 @@ def test_generate_reports_a_model_that_cannot_be_loaded(client: TestClient, engi
 
     assert response.status_code == 503
     assert response.json() == {"error": "no airllm"}
+
+
+def test_generate_reports_a_failed_generation(client: TestClient, engine: Any) -> None:
+    """A generation that fails is answered with the error shape of Ollama."""
+    engine.return_value.generate_result.side_effect = GenerationError("the checkpoint is broken")
+
+    response = client.post("/api/generate", json={"model": MODEL, "prompt": "hello"})
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "the checkpoint is broken"}
 
 
 def test_generate_requires_a_model(client: TestClient, engine: Any) -> None:

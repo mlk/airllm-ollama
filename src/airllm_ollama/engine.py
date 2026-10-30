@@ -22,7 +22,11 @@ from typing import Any, Protocol, cast
 
 from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
 from airllm_ollama.config import Settings, get_settings
-from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.exceptions import (
+    GenerationError,
+    ModelInitializationError,
+    ModelMismatchError,
+)
 from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
 
@@ -680,8 +684,13 @@ class AirLLMEngine:
                 )
             encoded = loaded_model.tokenizer(prompt, return_tensors="pt")
             inputs = _to_device(encoded, self._settings.device)
-            with _no_grad():
-                outputs = loaded_model.forward(**inputs)
+            try:
+                with _no_grad():
+                    outputs = loaded_model.forward(**inputs)
+            except Exception as exc:
+                # The checkpoint can be broken in a way that only shows up
+                # while the model runs.
+                raise self._generation_error(exc, action="decide") from exc
             probabilities = _probabilities(outputs)
             return Decision(
                 probabilities={
@@ -711,6 +720,9 @@ class AirLLMEngine:
         options = self._backend_options(model, kwargs)
         streamer = TextStreamer(model.tokenizer)
         outcome: list[object] = []
+        # The failure of the worker is raised in the thread that reads the
+        # stream, so that it is not swallowed by the worker thread.
+        failure: list[Exception] = []
         # The client can be gone before the generation ends. The event tells the
         # criterion to stop the model at the next token.
         abort_event = abort if abort is not None else threading.Event()
@@ -733,6 +745,8 @@ class AirLLMEngine:
                         **options,
                     )
                 )
+            except Exception as exc:
+                failure.append(exc)
             finally:
                 # Backends that do not stream never end the streamer.
                 streamer.end()
@@ -753,6 +767,11 @@ class AirLLMEngine:
             # The model may not be used while it is still generating, so the
             # lock is only released after the worker finished.
             worker.join()
+
+        if failure:
+            # The model failed while it was generating: the answer would be
+            # empty, so the failure is reported instead.
+            raise self._generation_error(failure[0]) from failure[0]
 
         raw_output = outcome[0] if outcome else None
         text = self._decode(model, raw_output) if raw_output is not None else ""
@@ -793,10 +812,33 @@ class AirLLMEngine:
             options = {**options, "stopping_criteria": [criterion]}
         # AirLLM backends accept the token ids positionally; the transformers
         # based one forwards them to `transformers.GenerationMixin.generate`.
-        raw_output = model.generate(
-            _prepare_input_ids(model, input_ids), attention_mask=attention_mask, **options
-        )
+        try:
+            raw_output = model.generate(
+                _prepare_input_ids(model, input_ids), attention_mask=attention_mask, **options
+            )
+        except Exception as exc:
+            raise self._generation_error(exc) from exc
         return raw_output, prompt_tokens
+
+    def _generation_error(self, exc: Exception, action: str = "generate") -> GenerationError:
+        """Return the error of a failed generation.
+
+        The checkpoint can be broken in a way that only shows up while the
+        model runs — a missing layer shard, a corrupt weight file — so the
+        failure is reported like a model that cannot be loaded. The name of
+        the checkpoint is part of the message, so that the operator knows which
+        files to look at.
+
+        Args:
+            exc: The error the model raised.
+            action: What the model was doing, e.g. ``generate`` or ``decide``.
+
+        Returns:
+            The error to answer the client with.
+        """
+        return GenerationError(
+            f"The model '{self._settings.resolved_model_path}' failed to {action}: {exc}"
+        )
 
     def _backend_options(
         self, model: AirLLMModelLike, kwargs: dict[str, object]

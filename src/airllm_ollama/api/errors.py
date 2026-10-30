@@ -10,24 +10,78 @@ instead — an OpenAI client parses ``{"error": {"message": ...}}``.
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 # The routes that answer in the OpenAI format.
-OPENAI_PREFIX = "/v1/"
+OPENAI_PREFIX = "/v1"
+
+
+def is_openai_route(request: Request) -> bool:
+    """Return whether the request belongs to the OpenAI routes.
+
+    Args:
+        request: The request to check.
+
+    Returns:
+        ``True`` for the ``/v1`` routes, ``False`` for the Ollama ones.
+    """
+    path = request.url.path
+    return path == OPENAI_PREFIX or path.startswith(f"{OPENAI_PREFIX}/")
+
+
+def error_body(
+    request: Request, message: str, error_type: str = "invalid_request_error"
+) -> dict[str, Any]:
+    """Return the body of an error, in the format of the route.
+
+    Args:
+        request: The request the error belongs to.
+        message: The message of the error.
+        error_type: The type of the error, in the OpenAI format.
+
+    Returns:
+        The body of the answer.
+    """
+    if is_openai_route(request):
+        return {
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": None,
+                "code": None,
+            }
+        }
+    return {"error": message}
 
 
 async def model_mismatch_handler(request: Request, exc: Exception) -> JSONResponse:
     """Answer an unknown model with 404, like Ollama does."""
-    return JSONResponse(status_code=404, content={"error": str(exc)})
+    return JSONResponse(status_code=404, content=error_body(request, str(exc)))
 
 
 async def model_initialization_handler(request: Request, exc: Exception) -> JSONResponse:
     """Answer a model that cannot be loaded with 503."""
-    return JSONResponse(status_code=503, content={"error": str(exc)})
+    return JSONResponse(
+        status_code=503,
+        content=error_body(request, str(exc), error_type="server_error"),
+    )
+
+
+async def generation_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Answer a generation that failed with 503.
+
+    A checkpoint that is broken in a way that only shows up while the model
+    generates cannot be used either, so the answer is the same as the one of a
+    model that cannot be loaded.
+    """
+    return JSONResponse(
+        status_code=503,
+        content=error_body(request, str(exc), error_type="server_error"),
+    )
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -38,16 +92,4 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
         for error in errors
     )
     message = details or "invalid request"
-    if request.url.path.startswith(OPENAI_PREFIX):
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": {
-                    "message": message,
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": None,
-                }
-            },
-        )
-    return JSONResponse(status_code=400, content={"error": message})
+    return JSONResponse(status_code=400, content=error_body(request, message))

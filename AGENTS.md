@@ -123,7 +123,7 @@ src/airllm_ollama/
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
 ├── decision.py        # the decision models (the questions and their answers)
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
-├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError
+├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError / GenerationError
 ├── health_check.py    # verification of a running instance
 ├── main.py            # create_app() factory + module-level `app`
 ├── model_metadata.py  # checkpoint metadata read from the local checkpoint
@@ -236,6 +236,18 @@ src/airllm_ollama/
   stays Ollama compatible. All three are implemented in `api/errors.py` and
   registered in `create_app()`.
 * Ollama's error body is `{"error": "..."}` — use it for every error.
+* `GenerationError` (issue #78) maps to **503** as well: a checkpoint that is
+  broken in a way that only shows up while the model generates cannot be used
+  either. The message names the checkpoint, so that the operator knows the
+  files to look at.
+* The `/v1/*` routes answer in the **OpenAI** format
+  (`{"error": {"message": ..., "type": ...}}`) — `api/errors.py` picks the
+  format by the path of the request (`error_body()`).
+* A **stream** cannot change its status code once the headers are sent, so a
+  failed generation ends the stream with an error event
+  (`{"error": "..."}` for Ollama, `data: {"error": {...}}` for OpenAI) — the
+  way Ollama reports it. The engine raises the error in the thread that reads
+  the stream, so that the failure of the worker thread is not swallowed.
 * `get_engine()` caches the engine for the process lifetime; settings are read
   once at startup. Call `reset_engine()` when the settings change (tests,
   hot reloads) — the singleton is *not* invalidated automatically.

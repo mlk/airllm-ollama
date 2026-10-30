@@ -17,6 +17,7 @@ from typing import Any
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import AirLLMEngine, GenerationResult, StreamChunk
+from airllm_ollama.exceptions import GenerationError
 from airllm_ollama.options import StopSequenceFilter, done_reason
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
@@ -172,13 +173,19 @@ def _stream_events(
     """
     stop_filter = StopSequenceFilter(stop)
     result: GenerationResult | None = None
-    for chunk in chunks:
-        if chunk.result is not None:
-            result = chunk.result
-            break
-        text = stop_filter.feed(chunk.text)
-        if text:
-            yield format_event(partial(text), stream_format)
+    try:
+        for chunk in chunks:
+            if chunk.result is not None:
+                result = chunk.result
+                break
+            text = stop_filter.feed(chunk.text)
+            if text:
+                yield format_event(partial(text), stream_format)
+    except GenerationError as exc:
+        # The generation failed: the client gets the error as the last event.
+        # The status code cannot be changed any more, the headers are sent.
+        yield format_event({"error": str(exc)}, stream_format)
+        return
     # The generation is over: the filter releases the tail it held back, it
     # cannot become a stop sequence any more.
     remaining = stop_filter.flush()
