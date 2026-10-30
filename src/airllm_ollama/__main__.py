@@ -94,6 +94,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="port the service listens on (default: the configured one)",
     )
+    parser.add_argument(
+        "--capabilities",
+        default=None,
+        help="capabilities of the served model, comma separated (default: the configured ones)",
+    )
     args = parser.parse_args(argv)
 
     # The arguments win over the environment variables and over the `.env` file.
@@ -106,6 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "device": args.device,
             "host": args.host,
             "port": args.port,
+            "capabilities": args.capabilities,
         }
     )
     if args.check:

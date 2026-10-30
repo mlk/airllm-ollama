@@ -30,7 +30,7 @@ from airllm_ollama.schemas.health import HealthResponse
 from airllm_ollama.schemas.ollama import ErrorBody
 from airllm_ollama.schemas.ps import PsResponse, RunningModel
 from airllm_ollama.schemas.show import ShowRequest, ShowResponse
-from airllm_ollama.schemas.tags import CAPABILITIES, ModelDetails, ModelInfo, TagsResponse
+from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
 from airllm_ollama.schemas.version import VersionResponse
 
 api_router = APIRouter()
@@ -256,6 +256,7 @@ async def tags() -> TagsResponse:
                     parameter_size=metadata.parameter_size,
                     context_length=settings.max_seq_len,
                 ),
+                capabilities=list(settings.capabilities),
             )
         ]
     )
@@ -292,7 +293,7 @@ async def show(request: ShowRequest) -> ShowResponse:
         template=metadata.template,
         details=_details(metadata, settings),
         model_info=metadata.model_info,
-        capabilities=list(CAPABILITIES),
+        capabilities=list(settings.capabilities),
     )
 
 

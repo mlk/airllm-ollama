@@ -187,8 +187,14 @@ src/airllm_ollama/
   completion, Ollama has **no** `chat` capability. The other capabilities of
   Ollama (`tools`, `vision`, `embedding`, `decision`, …) come with the features
   that are not implemented yet — `tools` with the tool calls (#16),
-  `embedding` with the embeddings (#64), `decision` with the decision models
-  (#68).
+  `embedding` with the embeddings (#64).
+* The capabilities of the **served** model are configured (issue #81):
+  `AIRLLM_OLLAMA_CAPABILITIES` (a comma separated list) or the argument
+  `--capabilities`. The default is `completion`; a decision model answers
+  `decision`. The service cannot tell the two apart — a decision model is an
+  ordinary causal language model — so the operator says what the model is. The
+  setting is read by the routes (`settings.capabilities`), the constant of the
+  schemas is its default.
 * The model management endpoints of Ollama (`/api/pull`, `/api/push`,
   `/api/create`, `/api/copy`, `/api/delete`) are exposed, but they always
   answer `501` with the Ollama error format: this service serves a single,
