@@ -17,7 +17,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 # The routes that answer in the OpenAI format.
-OPENAI_PREFIX = "/v1/"
+OPENAI_PREFIX = "/v1"
+
+
+def is_openai_route(request: Request) -> bool:
+    """Return whether the request belongs to the OpenAI routes.
+
+    Args:
+        request: The request to check.
+
+    Returns:
+        ``True`` for the ``/v1`` routes, ``False`` for the Ollama ones.
+    """
+    path = request.url.path
+    return path == OPENAI_PREFIX or path.startswith(f"{OPENAI_PREFIX}/")
 
 
 def error_body(
@@ -33,7 +46,7 @@ def error_body(
     Returns:
         The body of the answer.
     """
-    if request.url.path.startswith(OPENAI_PREFIX):
+    if is_openai_route(request):
         return {
             "error": {
                 "message": message,
