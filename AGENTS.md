@@ -101,6 +101,12 @@ together.
   `TYPE_CHECKING` guard, and tests must mock the engine.
 * `src/airllm_ollama/config.py` uses `get_settings()` with an `lru_cache`. Tests that
   change environment variables must call `get_settings.cache_clear()` afterwards.
+* The entry point (`__main__.py`) takes the model options as **command line
+  arguments** as well: `--model`, `--model-path`, `--device`, `--host`,
+  `--port`. They win over the environment variables and over the `.env` file.
+  They reach the settings through `config.apply_overrides()`, which writes them
+  into the environment (the settings are read from there) and clears the cache —
+  so it has to run before the settings are read for the first time.
 * The version of the package is derived from the **git tags** by `hatch-vcs`:
   `pyproject.toml` has no `version`, and `src/airllm_ollama/_version.py` is
   written when the package is built (it is gitignored). A release is a tag —
@@ -122,6 +128,7 @@ src/airllm_ollama/
 ├── api/routes.py      # HTTP routes (api_router)
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
 ├── decision.py        # the decision models (the questions and their answers)
+├── download.py        # the `download-model` command (a checkpoint from the Hub)
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError / GenerationError
 ├── health_check.py    # verification of a running instance
@@ -448,7 +455,8 @@ The maintainer is on a **metered connection** — never download large artifacts
   `SmolLM2-135M-Instruct`).
 * Tests must keep mocking the engine — the suite may never touch the network.
 * When a real model is needed, pre-fetch a filtered snapshot
-  (`snapshot_download(..., allow_patterns=[...])`) and point
+  (`uv run download-model --model <repo> --path <dir>`, the same as
+  `snapshot_download(..., allow_patterns=[...])`) and point
   `AIRLLM_OLLAMA_MODEL_PATH` at the local directory. See the README section
   "Downloading only what you need".
 

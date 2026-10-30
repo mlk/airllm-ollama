@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -72,3 +74,26 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide settings instance."""
     return Settings()
+
+
+def apply_overrides(overrides: Mapping[str, object]) -> None:
+    """Apply the command line overrides to the environment.
+
+    The settings are read from the environment, so the values of the command
+    line have to reach it that way: they win over the environment and over the
+    ``.env`` file. A value of ``None`` is ignored — it means that the argument
+    was not given.
+
+    The settings are cached, so this has to happen before they are read for
+    the first time.
+
+    Args:
+        overrides: The values of the command line, keyed by the name of the
+            setting (``model_name``, ``model_path``, ``device``, ``host``,
+            ``port``).
+    """
+    for name, value in overrides.items():
+        if value is None:
+            continue
+        os.environ[f"{ENV_PREFIX}{name.upper()}"] = str(value)
+    get_settings.cache_clear()

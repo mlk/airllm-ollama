@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 import uvicorn
 
-from airllm_ollama.config import get_settings
+from airllm_ollama.config import apply_overrides, get_settings
 from airllm_ollama.health_check import DEFAULT_TIMEOUT, check_service, format_results
 
 
@@ -68,8 +68,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_TIMEOUT,
         help="timeout of a single request in seconds (default: %(default)s)",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="name of the model the service serves (default: the configured model)",
+    )
+    parser.add_argument(
+        "--model-path",
+        default=None,
+        help="path of the local checkpoint (default: the configured one)",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="device handed to AirLLM, e.g. cuda:0 (default: the configured one)",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="host the service listens on (default: the configured one)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="port the service listens on (default: the configured one)",
+    )
     args = parser.parse_args(argv)
 
+    # The arguments win over the environment variables and over the `.env` file.
+    # They are applied before the check, so that `--host` and `--port` tell it
+    # where to look.
+    apply_overrides(
+        {
+            "model_name": args.model,
+            "model_path": args.model_path,
+            "device": args.device,
+            "host": args.host,
+            "port": args.port,
+        }
+    )
     if args.check:
         return check(args.url, args.timeout)
     serve()

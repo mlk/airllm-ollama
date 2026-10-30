@@ -75,13 +75,13 @@ uv sync --dev --extra airllm
 The server serves **one** model. The default is deliberately the smallest
 checkpoint that exercises the full request path:
 
-| Model | Weights | Notes |
-| --- | --- | --- |
-| `hf-internal-testing/tiny-random-LlamaForCausalLM` | **4.1 MB** | Random weights — smoke tests only. **Default.** |
-| `HuggingFaceTB/SmolLM2-135M-Instruct` | 269 MB | Smallest *trained* Llama-architecture instruct model — **ties its embeddings, so it does not load on macOS** (see below). |
-| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | 2.2 GB | Llama-architecture chat model, loads everywhere. |
-| `Qwen/Qwen2.5-0.5B-Instruct` | 988 MB | Better quality, still small — **not a Llama architecture, so it needs the torch backend (Linux/Windows)**. |
-| `NousResearch/Meta-Llama-3.1-8B-Instruct` | 16 GB | Llama-3.1, ungated. The quality/size sweet spot for a machine with a GPU. |
+| Model | Weights | Loads on | Notes |
+| --- | --- | --- | --- |
+| `hf-internal-testing/tiny-random-LlamaForCausalLM` | **4.1 MB** | everywhere | Random weights — smoke tests only. **Default.** |
+| `HuggingFaceTB/SmolLM2-135M-Instruct` | 269 MB | Linux, Windows | Smallest *trained* Llama-architecture instruct model — **ties its embeddings, so the MLX backend of macOS cannot load it** (see below). |
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | 2.2 GB | everywhere | Llama-architecture chat model. |
+| `Qwen/Qwen2.5-0.5B-Instruct` | 988 MB | Linux, Windows | Better quality, still small — **not a Llama architecture, so it needs the torch backend**. |
+| `NousResearch/Meta-Llama-3.1-8B-Instruct` | 16 GB | everywhere | Llama-3.1, ungated. The quality/size sweet spot for a machine with a GPU. |
 
 > **On macOS** AirLLM uses Apple's MLX backend, which always loads the output
 > head (`lm_head`) of the checkpoint. A model that **ties its embeddings**
@@ -92,44 +92,63 @@ checkpoint that exercises the full request path:
 
 **Where to change it**
 
-* Per install / per run — environment variable or `.env`:
+* Per install / per run — environment variable, `.env` file or command line
+  argument:
   `AIRLLM_OLLAMA_MODEL_NAME=HuggingFaceTB/SmolLM2-135M-Instruct`
 * Code default — `DEFAULT_MODEL_NAME` in `src/airllm_ollama/config.py`
 * Local checkpoint (no download at all) — `AIRLLM_OLLAMA_MODEL_PATH=/path/to/checkpoint`
+
+The command line arguments of the entry point win over the environment
+variables and over the `.env` file:
+
+```bash
+uv run --extra airllm python -m airllm_ollama \
+  --model-path models/smollm2-1.7b-instruct --model smollm2:1.7b --device cuda:0
+```
 
 ### Downloading only what you need
 
 AirLLM's own bootstrap downloads *every* file of the repository except the
 weights — for `SmolLM2-135M-Instruct` that is **1.9 GB of ONNX exports** on top
-of the 269 MB of weights. Pre-fetch a filtered snapshot instead and point the
-server at the local directory; AirLLM then splits the local checkpoint and
-downloads nothing:
+of the 269 MB of weights. The `download-model` command fetches only the files
+a checkpoint is made of — the configuration, the tokenizer and the weights —
+and the service then splits the local checkpoint and downloads nothing:
 
 ```bash
-# Optional: put the Hugging Face cache on an external drive
-export HF_HOME="$HOME/hf-cache"
+# Fetch the checkpoint (~6.5 MB for the tiny model)
+uv run download-model \
+  --model hf-internal-testing/tiny-random-LlamaForCausalLM \
+  --path models/tiny-random-llama
 
-# Fetch only the config, tokenizer and weights (~6.5 MB for the tiny model)
-uv run --extra airllm python - <<'PY'
-from huggingface_hub import snapshot_download
-
-print(snapshot_download(
-    "hf-internal-testing/tiny-random-LlamaForCausalLM",
-    allow_patterns=[
-        "*.json", "*.safetensors", "tokenizer.model", "merges.txt", "vocab.json",
-    ],
-    local_dir="models/tiny-random-llama",
-))
-PY
-
-# Serve the local checkpoint (no further downloads)
-export AIRLLM_OLLAMA_MODEL_PATH="$PWD/models/tiny-random-llama"
+# The command prints the command that serves it
+uv run --extra airllm python -m airllm_ollama \
+  --model-path models/tiny-random-llama \
+  --model hf-internal-testing/tiny-random-LlamaForCausalLM
 ```
 
-Swap the repo id for `HuggingFaceTB/SmolLM2-135M-Instruct` (≈ 272 MB with this
-filter) when you want real completions. AirLLM additionally writes one shard
-per layer next to the checkpoint; set
+The command works on every platform, and it reports what it downloaded:
+
+```
+Downloaded hf-internal-testing/tiny-random-LlamaForCausalLM to models/tiny-random-llama (6.5 MB)
+  config.json
+  generation_config.json
+  model.safetensors
+  special_tokens_map.json
+  tokenizer.json
+  tokenizer.model
+  tokenizer_config.json
+```
+
+Swap the repository for `HuggingFaceTB/SmolLM2-135M-Instruct` (≈ 272 MB with
+this filter) when you want real completions. AirLLM additionally writes one
+shard per layer next to the checkpoint; set
 `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` to relocate them.
+
+* A model that needs more files than the default ones (a `*.bin` checkpoint,
+  for example) takes them with `--include "*.bin"`.
+* A private or gated model needs a token: set `HF_TOKEN` to the token of an
+  account with access to it.
+* The Hugging Face cache can live on another drive with `HF_HOME`.
 
 ### A model that ties its embeddings
 
@@ -189,8 +208,8 @@ the untied checkpoint again.
 # every generation fails with a 503.
 uv run --extra airllm uvicorn airllm_ollama.main:app --reload
 
-# ...or via the module entry point (uses AIRLLM_OLLAMA_HOST/PORT)
-uv run --extra airllm python -m airllm_ollama
+# ...or via the module entry point (the arguments win over the environment)
+uv run --extra airllm python -m airllm_ollama --model-path models/tinyllama --model tinyllama:1.1b
 
 # Verify the service is alive
 curl http://127.0.0.1:8000/health
@@ -220,6 +239,38 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 
 A `.env` file overrides every one of these values. If yours still sets a
 variable that has a new default, remove the line to pick the default up again.
+
+### On Windows
+
+The steps are the same on every platform; only the shell and the device
+differ. AirLLM uses its **torch** backend on Windows (the MLX backend is macOS
+only), so a checkpoint that ties its embeddings works there as it is.
+
+```powershell
+# 1. Install the runtime (the PyPI wheel of torch is the CPU build, 127 MB)
+uv sync --dev --extra airllm
+
+# 2. Fetch a checkpoint — the same command as everywhere else
+uv run download-model -m TinyLlama/TinyLlama-1.1B-Chat-v1.0 -p models/tinyllama-1.1b-chat
+
+# 3. Serve it — the arguments save the environment variables
+uv run --extra airllm python -m airllm_ollama `
+  --model-path models/tinyllama-1.1b-chat `
+  --model tinyllama:1.1b `
+  --device cuda:0
+```
+
+* **The environment variables** are set with `$env:NAME = "value"` in
+  PowerShell (`$env:AIRLLM_OLLAMA_MODEL_PATH = "C:\models\tinyllama"`), and
+  they are *process* variables: they are gone when the shell closes. The
+  command line arguments avoid that.
+* **The device** is `cuda:0` by default; a machine without an NVIDIA GPU needs
+  `--device cpu` (slow, but it works).
+* **A GPU needs the CUDA build of torch**: the wheel of PyPI is the CPU one.
+  Install it first, and the extra will keep it:
+  `uv pip install torch --index-url https://download.pytorch.org/whl/cu124`.
+* **The paths** use `C:\models\...` — quote them, the backslash is an escape
+  character in some shells.
 
 ### API
 
@@ -692,6 +743,16 @@ A different decision model needs a different template.
 
 The images are not supported: judging them needs a checkpoint with a projector,
 not only a tokenizer.
+
+Two things to know before serving a decision model:
+
+* **The model of the example is not public.** `vllm-semantic-router/decision-3.0-0.6b`
+  answers `401` without a Hugging Face token: it needs an account with access
+  to it. Any other decision model works, as long as it answers with the
+  probabilities of the candidates — the template is configurable.
+* **It needs the torch backend.** The decision is a forward pass, and the MLX
+  backend of macOS has none — the decision models are therefore served on Linux
+  and Windows.
 
 ### Verifying a running instance
 
