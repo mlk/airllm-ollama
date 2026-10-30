@@ -28,6 +28,7 @@ DEFAULT_PATTERNS: tuple[str, ...] = (
     "merges.txt",
     "vocab.json",
     "chat_template.jinja",
+    "*.tiktoken",
 )
 
 
