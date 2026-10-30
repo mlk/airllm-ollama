@@ -86,13 +86,28 @@ def download_model(
             for name in (
                 item.relative_to(directory).as_posix()
                 for item in directory.rglob("*")
-                if item.is_file() and ".cache" not in item.parts
+                if item.is_file() and not _is_hidden(item)
             )
             if _matches(name, patterns)
         )
     )
     size = sum((directory / name).stat().st_size for name in files)
     return Download(model=model, path=directory, files=files, size=size)
+
+
+def _is_hidden(path: Path) -> bool:
+    """Return whether a file lies in a hidden directory.
+
+    The metadata of the Hub (the cache of the download) is hidden, and it is
+    not part of the checkpoint.
+
+    Args:
+        path: The file of the checkpoint.
+
+    Returns:
+        ``True`` when the file lies in a hidden directory.
+    """
+    return any(part.startswith(".") for part in path.parts)
 
 
 def _matches(name: str, patterns: Sequence[str]) -> bool:
@@ -166,7 +181,7 @@ def _report(download: Download) -> None:
     print("Serve it with:")
     print(
         f"  uv run --extra airllm python -m airllm_ollama "
-        f"--model-path {download.path} --model {download.model}"
+        f'--model-path "{download.path}" --model {download.model}'
     )
 
 
