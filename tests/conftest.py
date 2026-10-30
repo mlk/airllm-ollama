@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -54,6 +54,7 @@ def write_checkpoint() -> Callable[..., Path]:
         parameters: int = DEFAULT_PARAMETERS,
         architecture: str = "LlamaForCausalLM",
         model_type: str = "llama",
+        tensors: Sequence[str] = ("weight",),
     ) -> Path:
         """Create a checkpoint directory with a config and a safetensors file.
 
@@ -62,6 +63,7 @@ def write_checkpoint() -> Callable[..., Path]:
             parameters: Parameter count written into the safetensors header.
             architecture: Architecture name written into ``config.json``.
             model_type: Model type written into ``config.json``.
+            tensors: The names of the tensors in the safetensors header.
 
         Returns:
             The directory holding the checkpoint.
@@ -72,10 +74,11 @@ def write_checkpoint() -> Callable[..., Path]:
             config["model_type"] = model_type
         (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
-        header = {
+        header: dict[str, object] = {
             "__metadata__": {"format": "pt", "total_parameters": parameters, "total_size": 8},
-            "weight": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
         }
+        for name in tensors:
+            header[name] = {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}
         blob = json.dumps(header).encode("utf-8")
         weights = directory / "model.safetensors"
         weights.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\x00" * 8)

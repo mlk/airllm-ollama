@@ -12,6 +12,7 @@ from airllm_ollama.model_metadata import (
     _format_parameter_size,
     clear_metadata_cache,
     collect_metadata,
+    has_own_output_head,
 )
 from conftest import DEFAULT_PARAMETERS
 
@@ -276,3 +277,54 @@ def test_a_checkpoint_without_a_template_has_none(
     metadata = collect_metadata(str(checkpoint))
 
     assert metadata.template == ""
+
+
+def test_a_checkpoint_with_its_own_head_is_recognised(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """A model whose head is not tied to the embedding has its own weights."""
+    checkpoint = write_checkpoint(
+        tmp_path / "checkpoint",
+        tensors=("model.embed_tokens.weight", "lm_head.weight"),
+    )
+
+    assert has_own_output_head(str(checkpoint)) is True
+
+
+def test_a_checkpoint_that_ties_its_embeddings_is_recognised(
+    tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """A model that ties its embeddings has no head of its own."""
+    checkpoint = write_checkpoint(
+        tmp_path / "checkpoint",
+        tensors=("model.embed_tokens.weight",),
+    )
+
+    assert has_own_output_head(str(checkpoint)) is False
+
+
+def test_a_sharded_checkpoint_is_inspected(tmp_path: Path) -> None:
+    """The index of a sharded checkpoint holds the names of the tensors."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"lm_head.weight": "model-00002-of-00002.safetensors"}}),
+        encoding="utf-8",
+    )
+
+    assert has_own_output_head(str(checkpoint)) is True
+
+
+def test_an_unknown_checkpoint_is_not_refused(tmp_path: Path) -> None:
+    """A checkpoint that cannot be read is not refused."""
+    assert has_own_output_head(str(tmp_path / "does-not-exist")) is True
+    assert has_own_output_head("hf-internal-testing/tiny-random-LlamaForCausalLM") is True
+
+
+def test_a_broken_safetensors_header_is_not_refused(tmp_path: Path) -> None:
+    """A checkpoint whose header cannot be read is not refused."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"not a safetensors file")
+
+    assert has_own_output_head(str(checkpoint)) is True

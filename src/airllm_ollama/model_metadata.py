@@ -18,6 +18,10 @@ from pathlib import Path
 
 WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin", "model.bin")
 CHUNK_SIZE = 1024 * 1024
+# The header of a safetensors file holds one entry per tensor: a few hundred
+# kilobytes at most. A bigger size means that the file is not a safetensors
+# file, and the header must not be read.
+MAX_HEADER_SIZE = 10 * 1024 * 1024
 _STARTED_AT = datetime.now(UTC)
 
 
@@ -57,6 +61,42 @@ def collect_metadata(model_path: str) -> CheckpointMetadata:
 def clear_metadata_cache() -> None:
     """Forget the cached metadata, e.g. after the checkpoint changed."""
     _collect_metadata.cache_clear()
+
+
+def has_own_output_head(model_path: str) -> bool:
+    """Return whether the checkpoint has an output head of its own.
+
+    A model that ties its embeddings (``tie_word_embeddings`` in its config)
+    has no ``lm_head.weight`` of its own: the output head *is* the embedding
+    matrix. AirLLM's MLX backend always loads the head, so it cannot load such
+    a checkpoint — it fails with an error that says nothing about the reason.
+
+    Args:
+        model_path: Local checkpoint directory. A repository id or a checkpoint
+            that cannot be read simply yields ``True``: the answer is unknown,
+            and an unknown checkpoint is not refused.
+
+    Returns:
+        ``True`` when the checkpoint has its own ``lm_head.weight``, ``False``
+        when it ties the head to the embedding.
+    """
+    directory = Path(model_path)
+    if not directory.is_dir():
+        return True
+    index = directory / "model.safetensors.index.json"
+    if index.is_file():
+        weight_map = _read_json(index).get("weight_map")
+        if isinstance(weight_map, dict):
+            return "lm_head.weight" in weight_map
+        return True
+    weights = directory / "model.safetensors"
+    if not weights.is_file():
+        return True
+    keys = _safetensors_keys(weights)
+    if not keys:
+        # The header cannot be read: the answer is unknown.
+        return True
+    return "lm_head.weight" in keys
 
 
 @lru_cache(maxsize=4)
@@ -247,19 +287,48 @@ def _safetensors_parameter_count(weights: Path) -> int | None:
     part of the safetensors specification, so the count is best effort: when
     the field is missing the parameter size is reported as unknown.
     """
-    try:
-        with weights.open("rb") as handle:
-            (header_size,) = struct.unpack("<Q", handle.read(8))
-            header = json.loads(handle.read(header_size))
-    except (OSError, ValueError, struct.error):
-        return None
-    if not isinstance(header, dict):
-        return None
-    metadata = header.get("__metadata__")
+    metadata = _safetensors_header(weights).get("__metadata__")
     if not isinstance(metadata, dict):
         return None
     total = metadata.get("total_parameters")
     return total if isinstance(total, int) else None
+
+
+def _safetensors_keys(weights: Path) -> set[str]:
+    """Return the names of the tensors of a safetensors file.
+
+    Only the header of the file is read, not the weights themselves.
+
+    Args:
+        weights: The safetensors file.
+
+    Returns:
+        The names of the tensors, empty when the header cannot be read.
+    """
+    header = _safetensors_header(weights)
+    return {key for key in header if key != "__metadata__"}
+
+
+def _safetensors_header(weights: Path) -> dict[str, object]:
+    """Return the header of a safetensors file.
+
+    Args:
+        weights: The safetensors file.
+
+    Returns:
+        The header, empty when it cannot be read.
+    """
+    try:
+        with weights.open("rb") as handle:
+            (header_size,) = struct.unpack("<Q", handle.read(8))
+            if header_size > MAX_HEADER_SIZE:
+                return {}
+            header = json.loads(handle.read(header_size))
+    except (OSError, ValueError, struct.error):
+        return {}
+    if not isinstance(header, dict):
+        return {}
+    return header
 
 
 def _format_parameter_size(count: int) -> str:

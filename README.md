@@ -78,8 +78,17 @@ checkpoint that exercises the full request path:
 | Model | Weights | Notes |
 | --- | --- | --- |
 | `hf-internal-testing/tiny-random-LlamaForCausalLM` | **4.1 MB** | Random weights — smoke tests only. **Default.** |
-| `HuggingFaceTB/SmolLM2-135M-Instruct` | 269 MB | Smallest *trained* Llama-architecture instruct model. |
-| `Qwen/Qwen2.5-0.5B-Instruct` | 988 MB | Better quality, still small. |
+| `HuggingFaceTB/SmolLM2-135M-Instruct` | 269 MB | Smallest *trained* Llama-architecture instruct model — **ties its embeddings, so it does not load on macOS** (see below). |
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | 2.2 GB | Llama-architecture chat model, loads everywhere. |
+| `Qwen/Qwen2.5-0.5B-Instruct` | 988 MB | Better quality, still small — **not a Llama architecture, so it needs the torch backend (Linux/Windows)**. |
+| `NousResearch/Meta-Llama-3.1-8B-Instruct` | 16 GB | Llama-3.1, ungated. The quality/size sweet spot for a machine with a GPU. |
+
+> **On macOS** AirLLM uses Apple's MLX backend, which always loads the output
+> head (`lm_head`) of the checkpoint. A model that **ties its embeddings**
+> (`tie_word_embeddings: true` in its config) has no head of its own — every
+> SmolLM2 model ties them — so the backend cannot load it. The service refuses
+> such a checkpoint with a clear error; [untie it](#a-model-that-ties-its-embeddings)
+> or pick a model whose head is not tied.
 
 **Where to change it**
 
@@ -121,6 +130,56 @@ Swap the repo id for `HuggingFaceTB/SmolLM2-135M-Instruct` (≈ 272 MB with this
 filter) when you want real completions. AirLLM additionally writes one shard
 per layer next to the checkpoint; set
 `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` to relocate them.
+
+### A model that ties its embeddings
+
+A model that ties its embeddings (`tie_word_embeddings: true` in its config)
+shares one matrix between the input embedding and the output head — there is
+no `lm_head.weight` of its own. AirLLM's **MLX backend** (macOS) always loads
+the head, so it cannot load such a checkpoint; the service refuses it with a
+clear error instead of failing later with a message about a missing file.
+
+The torch backends (Linux, Windows) tie the embeddings themselves, so the model
+loads there as it is.
+
+To use a tied model on macOS, give the head its own tensor. The checkpoint
+becomes a normal two-file checkpoint, and AirLLM splits it like any other:
+
+```bash
+uv run --extra airllm python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
+
+checkpoint = Path("models/smollm2-1.7b-instruct")
+original = checkpoint / "model.safetensors"
+first = checkpoint / "model-00001-of-00002.safetensors"
+second = checkpoint / "model-00002-of-00002.safetensors"
+
+with safe_open(str(original), framework="pt") as weights:
+    names = list(weights.keys())
+    embed = weights.get_tensor("model.embed_tokens.weight")
+
+# The head becomes a tensor of its own: a copy of the embedding matrix.
+save_file({"lm_head.weight": embed.clone()}, str(second))
+os.rename(original, first)
+
+weight_map = {name: first.name for name in names}
+weight_map["lm_head.weight"] = second.name
+(checkpoint / "model.safetensors.index.json").write_text(
+    json.dumps({"metadata": {"total_size": 0}, "weight_map": weight_map})
+)
+print("untied:", first.name, "+", second.name)
+PY
+```
+
+The size grows by the head alone (201 MB for SmolLM2-1.7B). Delete the
+`splitted_model` directory of the checkpoint afterwards, so that AirLLM splits
+the untied checkpoint again.
 
 ### Running the application locally
 

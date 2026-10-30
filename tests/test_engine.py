@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
+from pathlib import Path
 from types import ModuleType
 from typing import cast
 
@@ -54,6 +55,14 @@ from fakes import (
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 BOS = BosTokenizer.BOS
 BOS_TEXT = BosTokenizer.BOS_TEXT
+
+
+class FakeMlxModel(FakeModel):
+    """Model double of AirLLM's MLX backend.
+
+    AirLLM recognises the backend by the name of the class, so the double has
+    to carry it.
+    """
 
 
 class _FakeAirLLMModule(ModuleType):
@@ -832,6 +841,29 @@ def test_default_factory_wraps_load_failures(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(ModelInitializationError, match="no such file"):
         default_model_factory(Settings(model_name="my-model"))
+
+
+def test_default_factory_refuses_a_tied_checkpoint_on_the_mlx_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """The MLX backend cannot load a model that ties its embeddings."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint", tensors=("model.embed_tokens.weight",))
+    _install_fake_airllm(monkeypatch, [], FakeMlxModel())
+
+    with pytest.raises(ModelInitializationError, match="ties its embeddings"):
+        default_model_factory(Settings(model_path=str(checkpoint)))
+
+
+def test_default_factory_loads_a_tied_checkpoint_on_the_torch_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, write_checkpoint: Callable[..., Path]
+) -> None:
+    """The torch backend ties the embeddings itself, so it loads the model."""
+    checkpoint = write_checkpoint(tmp_path / "checkpoint", tensors=("model.embed_tokens.weight",))
+    _install_fake_airllm(monkeypatch, [], FakeModel())
+
+    loaded = default_model_factory(Settings(model_path=str(checkpoint)))
+
+    assert isinstance(loaded, FakeModel)
 
 
 def test_engine_exposes_its_settings() -> None:
