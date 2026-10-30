@@ -110,35 +110,45 @@ uv run --extra airllm python -m airllm_ollama \
 
 AirLLM's own bootstrap downloads *every* file of the repository except the
 weights — for `SmolLM2-135M-Instruct` that is **1.9 GB of ONNX exports** on top
-of the 269 MB of weights. Pre-fetch a filtered snapshot instead and point the
-server at the local directory; AirLLM then splits the local checkpoint and
-downloads nothing:
+of the 269 MB of weights. The `download-model` command fetches only the files
+a checkpoint is made of — the configuration, the tokenizer and the weights —
+and the service then splits the local checkpoint and downloads nothing:
 
 ```bash
-# Optional: put the Hugging Face cache on an external drive
-export HF_HOME="$HOME/hf-cache"
+# Fetch the checkpoint (~6.5 MB for the tiny model)
+uv run download-model \
+  --model hf-internal-testing/tiny-random-LlamaForCausalLM \
+  --path models/tiny-random-llama
 
-# Fetch only the config, tokenizer and weights (~6.5 MB for the tiny model)
-uv run --extra airllm python - <<'PY'
-from huggingface_hub import snapshot_download
-
-print(snapshot_download(
-    "hf-internal-testing/tiny-random-LlamaForCausalLM",
-    allow_patterns=[
-        "*.json", "*.safetensors", "tokenizer.model", "merges.txt", "vocab.json",
-    ],
-    local_dir="models/tiny-random-llama",
-))
-PY
-
-# Serve the local checkpoint (no further downloads)
-export AIRLLM_OLLAMA_MODEL_PATH="$PWD/models/tiny-random-llama"
+# The command prints the command that serves it
+uv run --extra airllm python -m airllm_ollama \
+  --model-path models/tiny-random-llama \
+  --model hf-internal-testing/tiny-random-LlamaForCausalLM
 ```
 
-Swap the repo id for `HuggingFaceTB/SmolLM2-135M-Instruct` (≈ 272 MB with this
-filter) when you want real completions. AirLLM additionally writes one shard
-per layer next to the checkpoint; set
+The command works on every platform, and it reports what it downloaded:
+
+```
+Downloaded hf-internal-testing/tiny-random-LlamaForCausalLM to models/tiny-random-llama (6.5 MB)
+  config.json
+  generation_config.json
+  model.safetensors
+  special_tokens_map.json
+  tokenizer.json
+  tokenizer.model
+  tokenizer_config.json
+```
+
+Swap the repository for `HuggingFaceTB/SmolLM2-135M-Instruct` (≈ 272 MB with
+this filter) when you want real completions. AirLLM additionally writes one
+shard per layer next to the checkpoint; set
 `AIRLLM_OLLAMA_LAYER_SHARDS_SAVING_PATH` to relocate them.
+
+* A model that needs more files than the default ones (a `*.bin` checkpoint,
+  for example) takes them with `--include "*.bin"`.
+* A private or gated model needs a token: set `HF_TOKEN` to the token of an
+  account with access to it.
+* The Hugging Face cache can live on another drive with `HF_HOME`.
 
 ### A model that ties its embeddings
 
@@ -240,8 +250,8 @@ only), so a checkpoint that ties its embeddings works there as it is.
 # 1. Install the runtime (the PyPI wheel of torch is the CPU build, 127 MB)
 uv sync --dev --extra airllm
 
-# 2. Fetch a checkpoint (the same snippet as above, in PowerShell)
-uv run --extra airllm python -c "from huggingface_hub import snapshot_download; print(snapshot_download('TinyLlama/TinyLlama-1.1B-Chat-v1.0', allow_patterns=['*.json', '*.safetensors', 'tokenizer.model', 'merges.txt', 'vocab.json'], local_dir='models/tinyllama-1.1b-chat'))"
+# 2. Fetch a checkpoint — the same command as everywhere else
+uv run download-model -m TinyLlama/TinyLlama-1.1B-Chat-v1.0 -p models/tinyllama-1.1b-chat
 
 # 3. Serve it — the arguments save the environment variables
 uv run --extra airllm python -m airllm_ollama `

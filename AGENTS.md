@@ -128,6 +128,7 @@ src/airllm_ollama/
 ├── api/routes.py      # HTTP routes (api_router)
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
 ├── decision.py        # the decision models (the questions and their answers)
+├── download.py        # the `download-model` command (a checkpoint from the Hub)
 ├── engine.py          # AirLLMEngine: single-model, thread-safe, lazily loaded
 ├── exceptions.py      # AirLLMError / ModelMismatchError / ModelInitializationError / GenerationError
 ├── health_check.py    # verification of a running instance
@@ -454,7 +455,8 @@ The maintainer is on a **metered connection** — never download large artifacts
   `SmolLM2-135M-Instruct`).
 * Tests must keep mocking the engine — the suite may never touch the network.
 * When a real model is needed, pre-fetch a filtered snapshot
-  (`snapshot_download(..., allow_patterns=[...])`) and point
+  (`uv run download-model --model <repo> --path <dir>`, the same as
+  `snapshot_download(..., allow_patterns=[...])`) and point
   `AIRLLM_OLLAMA_MODEL_PATH` at the local directory. See the README section
   "Downloading only what you need".
 

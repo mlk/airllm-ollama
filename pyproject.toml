@@ -16,6 +16,7 @@ classifiers = [
 dependencies = [
     "anyio>=4.0.0",
     "fastapi>=0.115.0",
+    "huggingface-hub>=0.34",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "uvicorn[standard]>=0.32.0",
@@ -35,6 +36,7 @@ Issues = "https://github.com/mlk/airllm-ollama/issues"
 
 [project.scripts]
 airllm-ollama = "airllm_ollama.__main__:main"
+download-model = "airllm_ollama.download:main"
 
 [dependency-groups]
 dev = [

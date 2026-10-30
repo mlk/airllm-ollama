@@ -52,6 +52,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anyio" },
     { name = "fastapi" },
+    { name = "huggingface-hub" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
@@ -80,6 +81,7 @@ requires-dist = [
     { name = "airllm", marker = "extra == 'airllm'", specifier = ">=4.0.0" },
     { name = "anyio", specifier = ">=4.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "huggingface-hub", specifier = ">=0.34" },
     { name = "mlx", marker = "sys_platform == 'darwin' and extra == 'airllm'", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.9.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
