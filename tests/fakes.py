@@ -221,6 +221,11 @@ class BrokenModel(FakeModel):
         self.calls.append((args, kwargs))
         raise ValueError("[load_npz] Input must be a zip file")
 
+    def forward(self, *args: object, **kwargs: object) -> object:
+        """Record the forward pass and fail."""
+        self.forwards.append(dict(kwargs))
+        raise ValueError("[load_npz] Input must be a zip file")
+
 
 class FailingStream:
     """An iterator that fails as soon as it is read.

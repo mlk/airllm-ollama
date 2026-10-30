@@ -984,6 +984,18 @@ def test_decide_looks_the_candidate_up_with_a_leading_space(
     assert decision.probabilities == {"billing": 0.9}
 
 
+def test_a_failed_decision_is_reported() -> None:
+    """A model that fails while it decides is reported, not swallowed."""
+    factory = RecordingFactory(BrokenModel())
+    engine = AirLLMEngine(Settings(model_path="/models/broken"), model_factory=factory)
+
+    with pytest.raises(GenerationError) as failure:
+        engine.decide("Context: a ticket", ["a"])
+
+    assert "failed to generate" in str(failure.value)
+    assert "/models/broken" in str(failure.value)
+
+
 def test_the_stop_sequences_end_the_generation() -> None:
     """The criterion that stops at a stop sequence is handed to the model."""
     factory = RecordingFactory()

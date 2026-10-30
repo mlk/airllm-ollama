@@ -684,8 +684,13 @@ class AirLLMEngine:
                 )
             encoded = loaded_model.tokenizer(prompt, return_tensors="pt")
             inputs = _to_device(encoded, self._settings.device)
-            with _no_grad():
-                outputs = loaded_model.forward(**inputs)
+            try:
+                with _no_grad():
+                    outputs = loaded_model.forward(**inputs)
+            except Exception as exc:
+                # The checkpoint can be broken in a way that only shows up
+                # while the model runs.
+                raise self._generation_error(exc) from exc
             probabilities = _probabilities(outputs)
             return Decision(
                 probabilities={
