@@ -93,3 +93,10 @@ def test_the_capabilities_are_a_comma_separated_list(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("AIRLLM_OLLAMA_CAPABILITIES", "completion, decision")
 
     assert Settings(_env_file=None).capabilities == ["completion", "decision"]
+
+
+def test_the_capabilities_of_a_json_list_are_cleaned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JSON list is accepted, and its elements are cleaned as well."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_CAPABILITIES", '[" completion ", "decision "]')
+
+    assert Settings(_env_file=None).capabilities == ["completion", "decision"]

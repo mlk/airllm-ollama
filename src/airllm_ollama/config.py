@@ -95,7 +95,9 @@ class Settings(BaseSettings):
                 except ValueError:
                     decoded = None
                 if isinstance(decoded, list):
-                    return decoded
+                    return [
+                        part.strip() for part in (str(item).strip() for item in decoded) if part
+                    ]
             return [part.strip() for part in text.split(",") if part.strip()]
         return value
 
