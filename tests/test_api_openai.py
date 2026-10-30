@@ -416,6 +416,26 @@ def test_a_streamed_chat_reports_a_failed_generation(
     assert events[-1] == "data: [DONE]"
 
 
+def test_a_streamed_completion_reports_a_failed_generation(
+    client: TestClient, model: str, engine: Any
+) -> None:
+    """The client gets the error as the last event of the stream."""
+    engine.return_value.generate_stream.side_effect = lambda *args, **kwargs: FailingStream(
+        GenerationError("the checkpoint is broken")
+    )
+
+    response = client.post(
+        "/v1/completions",
+        json={"model": model, "prompt": ["one", "two"], "stream": True},
+    )
+
+    events = [line for line in response.text.splitlines() if line]
+    error = json.loads(events[-2].removeprefix("data: "))
+    assert error["error"]["message"] == "the checkpoint is broken"
+    # The remaining prompts would fail the same way: they are not generated.
+    assert engine.return_value.generate_stream.call_count == 1
+
+
 def test_the_model_is_unloaded_after_the_configured_idle_time(
     client: TestClient, model: str, engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

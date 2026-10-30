@@ -732,7 +732,14 @@ def _text_events(
             if abort is not None and abort.is_set():
                 # The client is gone: the remaining prompts are not generated.
                 break
-            yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
+            try:
+                yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
+            except GenerationError as exc:
+                # The generation failed: the remaining prompts would fail the
+                # same way, so the stream ends with the error.
+                yield _error_event(str(exc))
+                yield DONE
+                return
         yield DONE
     finally:
         if keep_alive is not None:
@@ -764,33 +771,27 @@ def _text_prompt_events(
         The events of the answer of the prompt.
     """
     stop_filter = StopSequenceFilter(stop)
-    try:
-        for chunk in engine.generate_stream(
-            prompt, model=stream.model, system=None, raw=False, stop=stop, abort=abort, **options
-        ):
-            if chunk.result is not None:
-                # The generation is over: the filter releases the tail it held
-                # back, it cannot become a stop sequence any more.
-                yield from _text_content_event(stream, index, stop_filter.flush())
-                yield _text_chunk_event(
-                    stream,
-                    index,
-                    finish_reason=generation_done_reason(chunk.result, options),
-                )
-                return
-            text = stop_filter.feed(chunk.text)
-            if text:
-                yield _text_chunk_event(stream, index, content=text)
-            if stop_filter.stopped:
-                # The stop sequence was found: the answer is complete, but the
-                # client still expects the last chunk.
-                yield _text_chunk_event(stream, index, finish_reason="stop")
-                return
-    except GenerationError as exc:
-        # The generation failed: the client gets the error as the last event.
-        # The status code cannot be changed any more, the headers are sent.
-        yield _error_event(str(exc))
-        return
+    for chunk in engine.generate_stream(
+        prompt, model=stream.model, system=None, raw=False, stop=stop, abort=abort, **options
+    ):
+        if chunk.result is not None:
+            # The generation is over: the filter releases the tail it held
+            # back, it cannot become a stop sequence any more.
+            yield from _text_content_event(stream, index, stop_filter.flush())
+            yield _text_chunk_event(
+                stream,
+                index,
+                finish_reason=generation_done_reason(chunk.result, options),
+            )
+            return
+        text = stop_filter.feed(chunk.text)
+        if text:
+            yield _text_chunk_event(stream, index, content=text)
+        if stop_filter.stopped:
+            # The stop sequence was found: the answer is complete, but the
+            # client still expects the last chunk.
+            yield _text_chunk_event(stream, index, finish_reason="stop")
+            return
     yield from _text_content_event(stream, index, stop_filter.flush())
     # The stream ended without the statistics of the generation: the client
     # still expects the last chunk.
