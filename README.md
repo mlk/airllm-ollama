@@ -824,6 +824,8 @@ The version of the package is the **git tag** — there is no version in
 `pyproject.toml` to keep up to date. [hatch-vcs](https://github.com/ofek/hatch-vcs)
 derives it from the tags when the package is built.
 
+**A release is a tag, and the tag publishes the package:**
+
 ```bash
 # 1. Make sure the working copy is clean and the tests pass
 git status
@@ -832,12 +834,10 @@ uv run pytest -q
 # 2. Tag the release — the tag is the version
 git tag 0.2.0
 git push origin 0.2.0
-
-# 3. Build the artifacts
-uv build
 ```
 
-The tag becomes the version of the release: `0.2.0` is the release `0.2.0`
+The **Publish** workflow builds the artifacts and uploads them to PyPI. The
+tag becomes the version of the release: `0.2.0` is the release `0.2.0`
 (a `v` prefix — `v0.2.0` — works as well). The artifacts are named after it:
 
 ```
@@ -846,15 +846,26 @@ dist/airllm_ollama-0.2.0.tar.gz
 ```
 
 A commit **after** the tag gets a development version (`0.2.1.dev0+…`), so a
-build from a checkout is never mistaken for a release. The version of a
-checkout is:
+build from a checkout is never mistaken for a release — the workflow refuses
+to publish one. The version of a checkout is:
 
 ```bash
 uv run python -c "import airllm_ollama; print(airllm_ollama.__version__)"
 ```
 
-The CI runs the quality gates; it does not publish anything. Build the
-artifacts locally with `uv build` and upload them wherever they should go.
+The CI runs the quality gates; it does not publish anything.
+
+#### The publishing setup (once)
+
+The workflow publishes with **trusted publishing**: PyPI hands a token to the
+workflow itself, so no long-lived secret sits in the repository. The publisher
+has to be configured once, on PyPI:
+
+* the project `airllm-ollama` (the owner `mlk`);
+* the workflow `publish.yml` of the repository `mlk/airllm-ollama`.
+
+Until that is done, the workflow builds the artifacts and stops at the
+publishing step — they are attached to the run and can be uploaded by hand.
 
 ### Project layout
 

@@ -1,0 +1,63 @@
+name: Publish
+
+on:
+  push:
+    tags: ["*"]
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # The trusted publishing of PyPI needs a token of the workflow itself: no
+  # long-lived secret sits in the repository.
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # The version of the package is derived from the git tags, so the
+          # checkout needs them.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.11
+
+      - name: Build the artifacts
+        run: uv build
+
+      - name: Check the version
+        run: |
+          version=$(uv run --no-project python -c "import pathlib, re; text = pathlib.Path('src/airllm_ollama/_version.py').read_text(); print(re.search(r'__version__ = version = .(.*).', text).group(1))")
+          echo "Version: $version"
+          case "$version" in
+            *dev*|*+*)
+              echo "::error::'$version' is not a release version: only a tag builds one"
+              exit 1
+              ;;
+          esac
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
