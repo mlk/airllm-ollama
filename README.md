@@ -861,8 +861,9 @@ The workflow publishes with **trusted publishing**: PyPI hands a token to the
 workflow itself, so no long-lived secret sits in the repository. The publisher
 has to be configured once, on PyPI:
 
-* the project `airllm-ollama` (the owner `mlk`);
-* the workflow `publish.yml` of the repository `mlk/airllm-ollama`.
+* the project `airllm-ollama` of the account **`mrmlk`**;
+* the publisher: GitHub, the owner `mlk`, the repository `airllm-ollama` and
+  the workflow file `publish.yml`.
 
 Until that is done, the workflow builds the artifacts and stops at the
 publishing step — they are attached to the run and can be uploaded by hand.
