@@ -690,7 +690,7 @@ class AirLLMEngine:
             except Exception as exc:
                 # The checkpoint can be broken in a way that only shows up
                 # while the model runs.
-                raise self._generation_error(exc) from exc
+                raise self._generation_error(exc, action="decide") from exc
             probabilities = _probabilities(outputs)
             return Decision(
                 probabilities={
@@ -820,23 +820,24 @@ class AirLLMEngine:
             raise self._generation_error(exc) from exc
         return raw_output, prompt_tokens
 
-    def _generation_error(self, exc: Exception) -> GenerationError:
+    def _generation_error(self, exc: Exception, action: str = "generate") -> GenerationError:
         """Return the error of a failed generation.
 
         The checkpoint can be broken in a way that only shows up while the
-        model generates — a missing layer shard, a corrupt weight file — so
-        the failure is reported like a model that cannot be loaded. The name of
+        model runs — a missing layer shard, a corrupt weight file — so the
+        failure is reported like a model that cannot be loaded. The name of
         the checkpoint is part of the message, so that the operator knows which
         files to look at.
 
         Args:
             exc: The error the model raised.
+            action: What the model was doing, e.g. ``generate`` or ``decide``.
 
         Returns:
             The error to answer the client with.
         """
         return GenerationError(
-            f"The model '{self._settings.resolved_model_path}' failed to generate: {exc}"
+            f"The model '{self._settings.resolved_model_path}' failed to {action}: {exc}"
         )
 
     def _backend_options(

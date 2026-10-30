@@ -992,7 +992,7 @@ def test_a_failed_decision_is_reported() -> None:
     with pytest.raises(GenerationError) as failure:
         engine.decide("Context: a ticket", ["a"])
 
-    assert "failed to generate" in str(failure.value)
+    assert "failed to decide" in str(failure.value)
     assert "/models/broken" in str(failure.value)
 
 
