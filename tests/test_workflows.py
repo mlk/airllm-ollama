@@ -15,19 +15,20 @@ import yaml
 WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
 
 
-def _workflow(name: str) -> dict[str, Any]:
-    """Return the parsed workflow of the given name.
+def _workflow(name: str) -> tuple[dict[str, Any], str]:
+    """Return the parsed workflow of the given name and its text.
 
     Args:
         name: The file name of the workflow.
 
     Returns:
-        The workflow.
+        The workflow and the text it was parsed from.
     """
     text = (WORKFLOWS / name).read_text(encoding="utf-8")
     # The base loader keeps every scalar a string: the key `on` would become
     # a boolean otherwise (the YAML 1.1 rule that GitHub does not follow).
-    return cast("dict[str, Any]", yaml.load(text, Loader=yaml.BaseLoader))
+    workflow = cast("dict[str, Any]", yaml.load(text, Loader=yaml.BaseLoader))
+    return workflow, text
 
 
 def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -46,7 +47,7 @@ def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 def test_the_publish_workflow_publishes_a_tag() -> None:
     """A tag builds the artifacts and publishes them to PyPI."""
-    workflow = _workflow("publish.yml")
+    workflow, text = _workflow("publish.yml")
 
     assert workflow["on"]["push"]["tags"] == ["*"]
     # The trusted publishing of PyPI needs a token of the workflow itself.
@@ -58,7 +59,6 @@ def test_the_publish_workflow_publishes_a_tag() -> None:
     assert any("uv build" in run for run in runs)
     assert any("pypa/gh-action-pypi-publish" in use for use in uses)
 
-    text = (WORKFLOWS / "publish.yml").read_text(encoding="utf-8")
     # The version of the package is derived from the git tags.
     assert "fetch-depth: 0" in text
     # A development version is not a release: the workflow refuses it.
@@ -67,7 +67,7 @@ def test_the_publish_workflow_publishes_a_tag() -> None:
 
 def test_the_quality_gates_run_on_every_pull_request() -> None:
     """The quality gates are the gate of every change."""
-    workflow = _workflow("ci.yml")
+    workflow, _ = _workflow("ci.yml")
 
     assert "pull_request" in workflow["on"]
     assert workflow["on"]["push"]["branches"] == ["main"]
