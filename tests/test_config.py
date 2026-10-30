@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from airllm_ollama.config import DEFAULT_MODEL_NAME, Settings, get_settings
+from airllm_ollama.config import DEFAULT_MODEL_NAME, Settings, apply_overrides, get_settings
 
 
 def test_default_settings_are_applied() -> None:
@@ -54,3 +54,23 @@ def test_get_settings_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert first is second
     assert second.model_name == DEFAULT_MODEL_NAME
+
+
+def test_overrides_win_over_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The command line overrides reach the settings through the environment."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_NAME", "from-the-environment")
+
+    apply_overrides({"model_name": "from-the-command-line", "device": "cpu"})
+
+    settings = get_settings()
+    assert settings.model_name == "from-the-command-line"
+    assert settings.device == "cpu"
+
+
+def test_an_override_that_was_not_given_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A value of None means that the argument was not given."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_PATH", "/models/from-the-environment")
+
+    apply_overrides({"model_path": None})
+
+    assert get_settings().model_path == "/models/from-the-environment"

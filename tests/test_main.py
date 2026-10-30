@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from airllm_ollama import __version__
 from airllm_ollama.__main__ import main
-from airllm_ollama.config import Settings
+from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.main import app, create_app
 
 
@@ -76,3 +76,50 @@ def test_entrypoint_parses_the_arguments_it_is_given(monkeypatch: pytest.MonkeyP
 
     assert main([]) == 0
     assert len(calls) == 1
+
+
+def test_entrypoint_takes_the_model_options_as_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The command line wins over the environment variables."""
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_NAME", "from-the-environment")
+    monkeypatch.setenv("AIRLLM_OLLAMA_DEVICE", "cpu")
+
+    main(
+        [
+            "--model",
+            "from-the-command-line",
+            "--model-path",
+            "/models/checkpoint",
+            "--device",
+            "cuda:0",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9999",
+        ]
+    )
+
+    assert calls == [
+        {
+            "host": "0.0.0.0",
+            "port": 9999,
+            "log_level": "info",
+        }
+    ]
+    settings = get_settings()
+    assert settings.model_name == "from-the-command-line"
+    assert settings.model_path == "/models/checkpoint"
+    assert settings.device == "cuda:0"
+
+
+def test_entrypoint_keeps_the_environment_without_the_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An argument that was not given does not override the environment."""
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+    monkeypatch.setenv("AIRLLM_OLLAMA_MODEL_NAME", "from-the-environment")
+
+    main([])
+
+    assert get_settings().model_name == "from-the-environment"

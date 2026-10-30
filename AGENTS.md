@@ -101,6 +101,12 @@ together.
   `TYPE_CHECKING` guard, and tests must mock the engine.
 * `src/airllm_ollama/config.py` uses `get_settings()` with an `lru_cache`. Tests that
   change environment variables must call `get_settings.cache_clear()` afterwards.
+* The entry point (`__main__.py`) takes the model options as **command line
+  arguments** as well: `--model`, `--model-path`, `--device`, `--host`,
+  `--port`. They win over the environment variables and over the `.env` file.
+  They reach the settings through `config.apply_overrides()`, which writes them
+  into the environment (the settings are read from there) and clears the cache —
+  so it has to run before the settings are read for the first time.
 * The version of the package is derived from the **git tags** by `hatch-vcs`:
   `pyproject.toml` has no `version`, and `src/airllm_ollama/_version.py` is
   written when the package is built (it is gitignored). A release is a tag —
