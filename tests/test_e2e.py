@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
+from airllm_ollama.stopping import StopGeneration
 from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel, SystemRoleTokenizer
 
 MODEL = "test-model"
@@ -405,6 +407,23 @@ def test_api_generate_streams_the_answer(service: TestClient, factory: FakeFacto
     assert events[0]["done"] is False
     assert events[-1]["done"] is True
     assert events[-1]["eval_count"] == 0
+
+
+def test_a_stream_gives_the_model_the_abort_event(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """The generation can be stopped when the client disconnects."""
+    factory.model.chunks = ["blue ", "sky"]
+
+    response = service.post(
+        "/api/generate", json={"model": MODEL, "prompt": PROMPT, "stream": True}
+    )
+
+    assert response.status_code == 200
+    _, kwargs = factory.model.calls[0]
+    criteria = cast("list[StopGeneration]", kwargs["stopping_criteria"])
+    # The stream is over: the generation is stopped anyway.
+    assert criteria[0].abort.is_set() is True
 
 
 def test_a_raw_stream_sends_the_prompt_unchanged(service: TestClient, factory: FakeFactory) -> None:

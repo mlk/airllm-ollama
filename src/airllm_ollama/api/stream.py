@@ -10,6 +10,7 @@ default here. Server-Sent Events can be selected with
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -57,6 +58,7 @@ def generate_events(
     system: str | None = None,
     raw: bool = False,
     stop: list[str] | None = None,
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the streaming events of a completion.
 
@@ -68,6 +70,7 @@ def generate_events(
         system: An optional system message, rendered with the chat template.
         raw: Whether the prompt is sent unchanged, without the chat template.
         stop: The stop sequences requested by the client.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The rendered events.
@@ -75,7 +78,15 @@ def generate_events(
     created_at = _now()
     stream_format = configured_format()
     yield from _stream_events(
-        engine.generate_stream(prompt, system=system, raw=raw, model=model, **options),
+        engine.generate_stream(
+            prompt,
+            system=system,
+            raw=raw,
+            model=model,
+            stop=stop or (),
+            abort=abort,
+            **options,
+        ),
         model=model,
         created_at=created_at,
         stream_format=stream_format,
@@ -93,6 +104,7 @@ def chat_events(
     model: str,
     options: dict[str, object],
     stop: list[str] | None = None,
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the streaming events of a chat answer.
 
@@ -102,6 +114,7 @@ def chat_events(
         model: The model the client asked for.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The rendered events.
@@ -109,7 +122,13 @@ def chat_events(
     created_at = _now()
     stream_format = configured_format()
     yield from _stream_events(
-        engine.generate_chat_stream(messages, model=model, **options),
+        engine.generate_chat_stream(
+            messages,
+            model=model,
+            stop=stop or (),
+            abort=abort,
+            **options,
+        ),
         model=model,
         created_at=created_at,
         stream_format=stream_format,

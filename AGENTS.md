@@ -118,6 +118,7 @@ together.
 src/airllm_ollama/
 ├── __init__.py        # package exports
 ├── __main__.py        # `python -m airllm_ollama` entry point (uvicorn runner)
+├── api/disconnect.py   # streaming of the events + abort of a generation
 ├── api/routes.py      # HTTP routes (api_router)
 ├── config.py          # Settings (env prefix AIRLLM_OLLAMA_) + get_settings()
 ├── decision.py        # the decision models (the questions and their answers)
@@ -128,6 +129,7 @@ src/airllm_ollama/
 ├── model_metadata.py  # checkpoint metadata read from the local checkpoint
 ├── options.py         # translation of Ollama's options + stop sequence filter
 ├── schemas/           # pydantic request/response models
+├── stopping.py        # the criterion that ends a generation (stop sequences, abort)
 ├── streaming.py       # streamer turning the generated tokens into text
 └── version.py         # __version__ (derived from the git tags by hatch-vcs)
 ```
@@ -251,9 +253,10 @@ src/airllm_ollama/
   `do_sample=True`). llama.cpp-only options (seed, Mirostat, presence and
   frequency penalties) are accepted and ignored — Ollama clients always send
   the full option set, so rejecting them would break the clients.
-* `options.stop` is applied by cutting the response at the first stop sequence.
-  This happens *after* the generation, not token by token — Ollama stops the
-  model early. Fine for the non-streaming shortcut, revisit with streaming.
+* `options.stop` ends the generation: the model stops at the next token after a
+  stop sequence (see "Stopping a generation" below). The response is cut at the
+  first stop sequence as well — that cut is the safety net for the backends
+  that cannot stop early.
 * The prompt is rendered with the chat template of the model (issue #31): the
   engine renders the system message and the prompt as a chat
   (`chat.render_completion()`), the same way `/api/chat` does it. The template
@@ -293,16 +296,40 @@ src/airllm_ollama/
   It handles both transformers variants (new tokens or the whole sequence).
 * The stop sequences are applied *while* streaming: `options.StopSequenceFilter`
   holds back the tail that could still become a stop sequence, so a stop
-  sequence spanning two chunks is detected as well. The generation itself is
-  not stopped early yet (issue #15).
-* A stop sequence does not end the stream: the generation continues and the
-  client still gets the last event, with the statistics of the generation —
-  the same numbers the non-streaming answer reports. Only the text after the
-  stop sequence is dropped. The filter releases the tail it held back when the
-  generation is over.
+  sequence spanning two chunks is detected as well.
+* A stop sequence does not end the stream: the client still gets the last event,
+  with the statistics of the generation — the same numbers the non-streaming
+  answer reports. Only the text after the stop sequence is dropped. The filter
+  releases the tail it held back when the generation is over.
 * `engine.prepare()` validates the model and loads it *before* the response
   headers are sent, so that a broken checkpoint becomes a 503 instead of a
   truncated stream.
+
+### Stopping a generation (issues #15 and #24, done)
+
+* `stopping.StopGeneration` is the criterion that ends a generation early. It is
+  handed to the model as `stopping_criteria`, so **transformers** checks it
+  between two generated tokens: the model stops at the next token.
+* The criterion does two things: it ends the generation when a **stop sequence**
+  appears in the generated tokens and when the **client is gone** (the `abort`
+  event is set). Only the *generated* tokens are decoded — a stop sequence in
+  the prompt does not end the generation.
+* The tail of the answer is decoded (the longest stop sequence plus a margin),
+  not the whole sequence: the criterion runs after every token.
+* The `stop` sequences of the request are passed to the engine
+  (`generate`, `generate_result`, `generate_chat`, `generate_stream`,
+  `generate_chat_stream`); they are never forwarded to AirLLM. The post-hoc cut
+  of `options.apply_stop_sequences()` stays as a safety net.
+* A client that disconnects stops the generation: `api/disconnect.py` reads the
+  events in a thread (`anyio.to_thread.run_sync(..., abandon_on_cancel=True)`)
+  and sets the `abort` event when the request is cancelled or the stream is
+  closed. The thread is abandoned, so the event loop stays free.
+* The engine waits for the worker thread before it releases the generation lock
+  (the model must not be used while it is still generating), so the lock is
+  released as soon as the generation actually stopped — at the next token.
+* **The MLX backend knows neither `stopping_criteria` nor `streamer`**: on
+  macOS the stop sequences only cut the answer and a disconnect does not stop
+  the generation. The torch backends (Linux, Windows) do both.
 
 ### Chat (issue #5, done)
 

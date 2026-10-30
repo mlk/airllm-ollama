@@ -65,7 +65,7 @@ def test_generate_delegates_to_the_engine(client: TestClient, engine: Any) -> No
     client.post("/api/generate", json={"model": MODEL, "prompt": "hello"})
 
     engine.return_value.generate_result.assert_called_once_with(
-        "hello", system=None, raw=False, model=MODEL
+        "hello", system=None, raw=False, model=MODEL, stop=()
     )
 
 
@@ -111,7 +111,7 @@ def test_generate_renders_the_system_prompt(client: TestClient, engine: Any) -> 
     )
 
     engine.return_value.generate_result.assert_called_once_with(
-        "hello", system="You are helpful.", raw=False, model=MODEL
+        "hello", system="You are helpful.", raw=False, model=MODEL, stop=()
     )
 
 
@@ -123,7 +123,7 @@ def test_generate_forwards_the_raw_flag(client: TestClient, engine: Any) -> None
     )
 
     engine.return_value.generate_result.assert_called_once_with(
-        "hello", system="You are helpful.", raw=True, model=MODEL
+        "hello", system="You are helpful.", raw=True, model=MODEL, stop=()
     )
 
 

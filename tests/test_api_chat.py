@@ -67,7 +67,7 @@ def test_chat_delegates_the_history_to_the_engine(client: TestClient, engine: An
     client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES})
 
     engine.return_value.generate_chat.assert_called_once_with(
-        [("system", "Be brief."), ("user", "Why is the sky blue?")], model=MODEL
+        [("system", "Be brief."), ("user", "Why is the sky blue?")], model=MODEL, stop=()
     )
 
 

@@ -4,6 +4,7 @@ The ``/api/*`` routes mirror Ollama's REST interface, so standard Ollama
 clients can talk to this service unchanged.
 """
 
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
+from airllm_ollama.api.disconnect import stream_events
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine, get_engine, model_names_match
@@ -100,8 +102,11 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
     """
     engine = get_engine()
     options = map_options(request.options)
+    stop = request.options.stop if request.options else None
     if request.stream:
         engine.prepare(request.model)
+        # The event stops the generation when the client disconnects.
+        abort = threading.Event()
         return _stream_response(
             generate_events(
                 engine,
@@ -110,15 +115,22 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
                 raw=request.raw,
                 model=request.model,
                 options=options,
-                stop=request.options.stop if request.options else None,
+                stop=stop,
+                abort=abort,
             ),
             engine,
             request.keep_alive,
+            abort,
         )
     result = engine.generate_result(
-        request.prompt, system=request.system, raw=request.raw, model=request.model, **options
+        request.prompt,
+        system=request.system,
+        raw=request.raw,
+        model=request.model,
+        stop=stop or (),
+        **options,
     )
-    text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
+    text = apply_stop_sequences(result.text, stop)
 
     settings = get_settings()
     keep_alive = parse_keep_alive(
@@ -143,14 +155,24 @@ async def generate(request: GenerateRequest) -> GenerateResponse | StreamingResp
 
 
 def _stream_response(
-    events: Iterator[str], engine: AirLLMEngine, keep_alive: str | None
+    events: Iterator[str], engine: AirLLMEngine, keep_alive: str | None, abort: threading.Event
 ) -> StreamingResponse:
-    """Return a streaming response and schedule the unload of the model."""
+    """Return a streaming response and schedule the unload of the model.
+
+    Args:
+        events: The events of the answer.
+        engine: The engine that runs the generation.
+        keep_alive: The idle time after which the model is unloaded.
+        abort: The event that stops the generation when the client is gone.
+
+    Returns:
+        The streaming response.
+    """
     settings = get_settings()
     lifetime = parse_keep_alive(keep_alive if keep_alive is not None else settings.keep_alive)
     if lifetime is not None:
         engine.schedule_unload(lifetime)
-    return StreamingResponse(events, media_type=media_type())
+    return StreamingResponse(stream_events(events, abort), media_type=media_type())
 
 
 @api_router.post(
@@ -171,21 +193,26 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     engine = get_engine()
     messages = [(message.role, message.content) for message in request.messages]
     options = map_options(request.options)
+    stop = request.options.stop if request.options else None
     if request.stream:
         engine.prepare(request.model)
+        # The event stops the generation when the client disconnects.
+        abort = threading.Event()
         return _stream_response(
             chat_events(
                 engine,
                 messages,
                 model=request.model,
                 options=options,
-                stop=request.options.stop if request.options else None,
+                stop=stop,
+                abort=abort,
             ),
             engine,
             request.keep_alive,
+            abort,
         )
-    result = engine.generate_chat(messages, model=request.model, **options)
-    text = apply_stop_sequences(result.text, request.options.stop if request.options else None)
+    result = engine.generate_chat(messages, model=request.model, stop=stop or (), **options)
+    text = apply_stop_sequences(result.text, stop)
 
     settings = get_settings()
     keep_alive = parse_keep_alive(

@@ -322,6 +322,17 @@ curl -N http://127.0.0.1:8000/api/generate \
 {"model":"...","created_at":"...","response":"","done":true,"done_reason":"stop", ...}
 ```
 
+A client that disconnects while the stream is open stops the generation: the
+model is free again after the next token, instead of generating an answer
+nobody waits for. The stop sequences of `options.stop` end the generation the
+same way — the model stops as soon as it produced one of them.
+
+> **On macOS** AirLLM uses Apple's MLX backend, which does not know the
+> stopping criteria of `transformers`: the answer is cut at the stop sequence
+> as before, but the model keeps generating until it is done, and a client that
+> disconnects does not stop the generation. On the torch backends (Linux and
+> Windows) the model stops at the next token.
+
 | Ollama request field | Behaviour |
 | --- | --- |
 | `model` | Required; an unknown model is answered with `404` and `{"error": "..."}` |
@@ -331,7 +342,7 @@ curl -N http://127.0.0.1:8000/api/generate \
 | `options.num_predict` | Mapped to the number of generated tokens |
 | `options.num_ctx` | Mapped to the maximum sequence length |
 | `options.repeat_penalty` | Mapped to the repetition penalty |
-| `options.stop` | The response is cut at the first stop sequence |
+| `options.stop` | The generation ends at the first stop sequence: the model stops there and the response is cut |
 | `options.seed`, `mirostat*`, `presence_penalty`, `frequency_penalty` | Accepted, but not applied (no llama.cpp sampler) |
 | `keep_alive` | Unloads the model after the given idle time (`"30s"`, `"5m"`, `"1h"`, `"0"`). Without it the model stays in memory, because reloading an AirLLM checkpoint is expensive. A service-wide default can be set with `AIRLLM_OLLAMA_KEEP_ALIVE` |
 | `raw` | Sends the prompt unchanged, without the chat template (like Ollama). The system message is dropped |

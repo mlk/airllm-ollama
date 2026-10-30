@@ -8,6 +8,7 @@ serves a single model, so the list has exactly one entry.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from airllm_ollama.api.disconnect import stream_events
 from airllm_ollama.config import get_settings
 from airllm_ollama.decision import (
     CHOICE,
@@ -395,11 +397,18 @@ async def chat_completions(
         # The model is loaded before the headers are sent: a broken checkpoint
         # becomes a 503 instead of a truncated stream.
         await run_in_threadpool(engine.prepare, request.model)
+        # The event stops the generation when the client disconnects.
+        abort = threading.Event()
         return StreamingResponse(
-            _chat_events(engine, messages, request.model, options, stop, keep_alive),
+            stream_events(
+                _chat_events(engine, messages, request.model, options, stop, keep_alive, abort),
+                abort,
+            ),
             media_type=SSE_MEDIA_TYPE,
         )
-    result = await run_in_threadpool(engine.generate_chat, messages, model=request.model, **options)
+    result = await run_in_threadpool(
+        engine.generate_chat, messages, model=request.model, stop=stop, **options
+    )
     text = apply_stop_sequences(result.text, stop)
     if keep_alive is not None:
         engine.schedule_unload(keep_alive)
@@ -429,6 +438,7 @@ def _chat_events(
     options: dict[str, object],
     stop: list[str],
     keep_alive: float | None = None,
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the Server-Sent Events of a chat completion.
 
@@ -439,12 +449,13 @@ def _chat_events(
         options: The translated generation options.
         stop: The stop sequences requested by the client.
         keep_alive: The lifetime of the loaded model, if one is configured.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The events of the stream, the last one being ``[DONE]``.
     """
     try:
-        yield from _completion_events(engine, messages, model, options, stop)
+        yield from _completion_events(engine, messages, model, options, stop, abort)
     finally:
         if keep_alive is not None:
             # The model stays loaded for the configured idle time.
@@ -457,6 +468,7 @@ def _completion_events(
     model: str,
     options: dict[str, object],
     stop: list[str],
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the Server-Sent Events of the answer of the model.
 
@@ -466,6 +478,7 @@ def _completion_events(
         model: The model the client asked for.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The events of the stream, the last one being ``[DONE]``.
@@ -474,7 +487,9 @@ def _completion_events(
     created = int(time.time())
     stop_filter = StopSequenceFilter(stop)
     first = True
-    for chunk in engine.generate_chat_stream(messages, model=model, **options):
+    for chunk in engine.generate_chat_stream(
+        messages, model=model, stop=stop, abort=abort, **options
+    ):
         if chunk.result is not None:
             # The generation is over: the filter releases the tail it held
             # back, it cannot become a stop sequence any more.
@@ -608,8 +623,13 @@ async def completions(request: CompletionRequest) -> TextCompletion | StreamingR
         # The model is loaded before the headers are sent: a broken checkpoint
         # becomes a 503 instead of a truncated stream.
         await run_in_threadpool(engine.prepare, request.model)
+        # The event stops the generation when the client disconnects.
+        abort = threading.Event()
         return StreamingResponse(
-            _text_events(engine, prompts, request.model, options, stop, keep_alive),
+            stream_events(
+                _text_events(engine, prompts, request.model, options, stop, keep_alive, abort),
+                abort,
+            ),
             media_type=SSE_MEDIA_TYPE,
         )
     choices: list[CompletionChoice] = []
@@ -617,7 +637,13 @@ async def completions(request: CompletionRequest) -> TextCompletion | StreamingR
     completion_tokens = 0
     for index, prompt in enumerate(prompts):
         result = await run_in_threadpool(
-            engine.generate_result, prompt, model=request.model, system=None, raw=False, **options
+            engine.generate_result,
+            prompt,
+            model=request.model,
+            system=None,
+            raw=False,
+            stop=stop,
+            **options,
         )
         choices.append(
             CompletionChoice(
@@ -659,6 +685,7 @@ def _text_events(
     options: dict[str, object],
     stop: list[str],
     keep_alive: float | None = None,
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the Server-Sent Events of the completions of the prompts.
 
@@ -669,6 +696,7 @@ def _text_events(
         options: The translated generation options.
         stop: The stop sequences requested by the client.
         keep_alive: The lifetime of the loaded model, if one is configured.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The events of the stream, the last one being ``[DONE]``.
@@ -676,7 +704,10 @@ def _text_events(
     stream = _TextStream(id=_text_completion_id(), created=int(time.time()), model=model)
     try:
         for index, prompt in enumerate(prompts):
-            yield from _text_prompt_events(engine, prompt, index, stream, options, stop)
+            if abort is not None and abort.is_set():
+                # The client is gone: the remaining prompts are not generated.
+                break
+            yield from _text_prompt_events(engine, prompt, index, stream, options, stop, abort)
         yield DONE
     finally:
         if keep_alive is not None:
@@ -691,6 +722,7 @@ def _text_prompt_events(
     stream: _TextStream,
     options: dict[str, object],
     stop: list[str],
+    abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the Server-Sent Events of the answer of one prompt.
 
@@ -701,13 +733,14 @@ def _text_prompt_events(
         stream: The state that every chunk shares.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
+        abort: The event that stops the generation when the client is gone.
 
     Yields:
         The events of the answer of the prompt.
     """
     stop_filter = StopSequenceFilter(stop)
     for chunk in engine.generate_stream(
-        prompt, model=stream.model, system=None, raw=False, **options
+        prompt, model=stream.model, system=None, raw=False, stop=stop, abort=abort, **options
     ):
         if chunk.result is not None:
             # The generation is over: the filter releases the tail it held
