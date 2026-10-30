@@ -236,6 +236,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 | `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
 | `AIRLLM_OLLAMA_DECISION_TEMPLATE` | `Context: {state}\nChoices: {choices}\nSelected Option:` | The prompt template of the decision models (`POST /v1/systemone`) |
+| `AIRLLM_OLLAMA_CAPABILITIES` | `completion` | The capabilities of the served model, comma separated: `completion` for a model that generates text, `decision` for a decision model |
 
 A `.env` file overrides every one of these values. If yours still sets a
 variable that has a new default, remove the line to pick the default up again.
@@ -337,6 +338,21 @@ The `capabilities` of the model are `["completion"]`: the service generates
 text, and the chat endpoint is a completion — Ollama has no `chat` capability.
 The other capabilities (`tools`, `vision`, `embedding`, `decision`) come with
 the features that are not implemented yet.
+
+A **decision model** — the kind of `POST /v1/systemone` uses — reports
+`["decision"]`. The service cannot tell the two apart (a decision model is an
+ordinary causal language model), so the capability is configured:
+
+```bash
+export AIRLLM_OLLAMA_CAPABILITIES=decision
+# ...or, on the command line
+uv run --extra airllm python -m airllm_ollama --capabilities decision
+```
+
+The value is a comma separated list, so a model that does both reports
+`completion,decision`. Ollama has no `decision` capability of its own — the
+value is an extension of this service, and a client that does not know it
+ignores it.
 
 `POST /api/show` answers the details of that model, in the shape Ollama uses:
 
@@ -753,6 +769,9 @@ Two things to know before serving a decision model:
 * **It needs the torch backend.** The decision is a forward pass, and the MLX
   backend of macOS has none — the decision models are therefore served on Linux
   and Windows.
+* **The capability of the served model is `decision`**, so that a client sees
+  what it can do: `AIRLLM_OLLAMA_CAPABILITIES=decision` (or
+  `--capabilities decision`).
 
 ### Verifying a running instance
 

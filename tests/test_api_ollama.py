@@ -115,6 +115,21 @@ def test_both_endpoints_report_the_same_capabilities(client: TestClient) -> None
     assert CAPABILITIES == ["completion"]
 
 
+def test_the_capabilities_of_the_served_model_are_reported(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision model reports the capability of a decision model."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_CAPABILITIES", "decision")
+    get_settings.cache_clear()
+
+    tags = client.get("/api/tags").json()["models"][0]["capabilities"]
+    show = client.post("/api/show", json={"model": get_settings().model_name}).json()[
+        "capabilities"
+    ]
+
+    assert tags == show == ["decision"]
+
+
 def test_api_tags_reports_local_checkpoint_metadata(
     client: TestClient, local_checkpoint: Path
 ) -> None:

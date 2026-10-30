@@ -123,3 +123,12 @@ def test_entrypoint_keeps_the_environment_without_the_arguments(
     main([])
 
     assert get_settings().model_name == "from-the-environment"
+
+
+def test_entrypoint_takes_the_capabilities_as_an_argument(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The capabilities of the served model are an argument as well."""
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    main(["--capabilities", "decision"])
+
+    assert get_settings().capabilities == ["decision"]

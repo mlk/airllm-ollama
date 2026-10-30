@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from airllm_ollama.schemas.tags import CAPABILITIES
 from airllm_ollama.version import __version__
 
 ENV_PREFIX = "AIRLLM_OLLAMA_"
@@ -63,6 +67,37 @@ class Settings(BaseSettings):
     # state the question is about and the candidates the model chooses from;
     # the newlines are written as "\n".
     decision_template: str = DEFAULT_DECISION_TEMPLATE
+    # The capabilities of the served model, as a comma separated list. The
+    # service generates text, so a completion model is the default; a decision
+    # model (the one of `POST /v1/systemone`) answers "decision".
+    capabilities: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(CAPABILITIES))
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _split_capabilities(cls, value: object) -> object:
+        """Accept the capabilities as a comma separated list.
+
+        The environment holds a string (`AIRLLM_OLLAMA_CAPABILITIES=decision`),
+        which is easier to write than a JSON list.
+
+        Args:
+            value: The value of the setting.
+
+        Returns:
+            The capabilities as a list.
+        """
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                # A JSON list is accepted as well.
+                try:
+                    decoded = json.loads(text)
+                except ValueError:
+                    decoded = None
+                if isinstance(decoded, list):
+                    return decoded
+            return [part.strip() for part in text.split(",") if part.strip()]
+        return value
 
     @property
     def resolved_model_path(self) -> str:

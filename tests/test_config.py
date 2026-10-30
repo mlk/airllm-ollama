@@ -74,3 +74,22 @@ def test_an_override_that_was_not_given_is_ignored(monkeypatch: pytest.MonkeyPat
     apply_overrides({"model_path": None})
 
     assert get_settings().model_path == "/models/from-the-environment"
+
+
+def test_the_capabilities_default_to_a_completion_model() -> None:
+    """The service generates text, so a completion model is the default."""
+    assert Settings().capabilities == ["completion"]
+
+
+def test_the_capabilities_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The capabilities of a decision model are configured."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_CAPABILITIES", "decision")
+
+    assert Settings(_env_file=None).capabilities == ["decision"]
+
+
+def test_the_capabilities_are_a_comma_separated_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Several capabilities are written with a comma."""
+    monkeypatch.setenv("AIRLLM_OLLAMA_CAPABILITIES", "completion, decision")
+
+    assert Settings(_env_file=None).capabilities == ["completion", "decision"]
