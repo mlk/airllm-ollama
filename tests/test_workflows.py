@@ -51,6 +51,10 @@ def test_the_publish_workflow_publishes_a_tag() -> None:
     workflow, text = _workflow("publish.yml")
 
     assert workflow["on"]["push"]["tags"] == ["*"]
+    # A publication in flight is never cancelled.
+    assert str(workflow["concurrency"]["cancel-in-progress"]).lower() == "false"
+    # The workflow reads the repository, it does not write to it.
+    assert workflow["permissions"]["contents"] == "read"
     # The trusted publishing of PyPI needs a token of the workflow itself.
     assert workflow["permissions"]["id-token"] == "write"
 
