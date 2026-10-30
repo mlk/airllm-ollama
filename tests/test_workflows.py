@@ -31,17 +31,18 @@ def _workflow(name: str) -> tuple[dict[str, Any], str]:
     return workflow, text
 
 
-def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the steps of the first job of a workflow.
+def _steps(workflow: dict[str, Any], job_name: str | None = None) -> list[dict[str, Any]]:
+    """Return the steps of a job of a workflow.
 
     Args:
         workflow: The workflow.
+        job_name: The name of the job; the first one when it is not given.
 
     Returns:
         The steps of the job.
     """
     jobs = cast("dict[str, Any]", workflow["jobs"])
-    job = cast("dict[str, Any]", next(iter(jobs.values())))
+    job = cast("dict[str, Any]", jobs[job_name] if job_name else next(iter(jobs.values())))
     return cast("list[dict[str, Any]]", job["steps"])
 
 
@@ -53,7 +54,7 @@ def test_the_publish_workflow_publishes_a_tag() -> None:
     # The trusted publishing of PyPI needs a token of the workflow itself.
     assert workflow["permissions"]["id-token"] == "write"
 
-    steps = _steps(workflow)
+    steps = _steps(workflow, "publish")
     runs = [str(step.get("run", "")) for step in steps]
     uses = [str(step.get("uses", "")) for step in steps]
     assert any("uv build" in run for run in runs)
