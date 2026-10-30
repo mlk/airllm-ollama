@@ -7,7 +7,7 @@ with a ``generate`` method.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import cast
 
 TOKEN_IDS = [11, 22, 33]
@@ -211,6 +211,39 @@ class AbortableModel(FakeModel):
             if abort is not None:
                 cast("threading.Event", abort).wait(timeout=5)
         return self.output
+
+
+class BrokenModel(FakeModel):
+    """Model double whose generation fails, like a broken checkpoint does."""
+
+    def generate(self, *args: object, **kwargs: object) -> object:
+        """Record the call and fail."""
+        self.calls.append((args, kwargs))
+        raise ValueError("[load_npz] Input must be a zip file")
+
+
+class FailingStream:
+    """An iterator that fails as soon as it is read.
+
+    It stands in for a generation that fails while the model is producing the
+    answer — a broken checkpoint, for example.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        """Create the stream.
+
+        Args:
+            error: The error the stream raises.
+        """
+        self._error = error
+
+    def __iter__(self) -> Iterator[object]:
+        """Return the iterator that fails."""
+        return self
+
+    def __next__(self) -> object:
+        """Raise the error of the generation."""
+        raise self._error
 
 
 class RecordingFactory:

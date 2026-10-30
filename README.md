@@ -355,7 +355,8 @@ without a template gets the prompt with the system message in front of it
 (`"Be terse.\n\nWhy is the sky blue?"`).
 
 Errors follow Ollama's format: `404` for an unknown model, `503` when the
-model cannot be loaded and `400` for an invalid request body.
+model cannot be loaded (or when a generation fails because of the checkpoint)
+and `400` for an invalid request body.
 
 ### Endpoints that are not implemented
 

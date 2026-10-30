@@ -11,7 +11,12 @@ from pytest_mock import MockerFixture
 
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import GenerationResult, StreamChunk
-from airllm_ollama.exceptions import ModelInitializationError, ModelMismatchError
+from airllm_ollama.exceptions import (
+    GenerationError,
+    ModelInitializationError,
+    ModelMismatchError,
+)
+from fakes import FailingStream
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 MESSAGES = [
@@ -129,6 +134,29 @@ def test_chat_reports_a_model_that_cannot_be_loaded(client: TestClient, engine: 
 
     assert response.status_code == 503
     assert response.json() == {"error": "no airllm"}
+
+
+def test_chat_reports_a_failed_generation(client: TestClient, engine: Any) -> None:
+    """A generation that fails is answered with the error shape of Ollama."""
+    engine.return_value.generate_chat.side_effect = GenerationError("the checkpoint is broken")
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES})
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "the checkpoint is broken"}
+
+
+def test_a_stream_reports_a_failed_generation(client: TestClient, engine: Any) -> None:
+    """The client gets the error as the last event of the stream."""
+    engine.return_value.generate_chat_stream.side_effect = lambda *args, **kwargs: FailingStream(
+        GenerationError("the checkpoint is broken")
+    )
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES, "stream": True})
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1] == {"error": "the checkpoint is broken"}
 
 
 def test_chat_requires_messages(client: TestClient, engine: Any) -> None:
