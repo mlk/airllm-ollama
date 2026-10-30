@@ -113,6 +113,12 @@ together.
   `git tag 0.2.0 && git push origin 0.2.0`; the README describes the rest.
   `uv lock` records the version as *dynamic*, so the lock file does not have to
   be updated for a new release.
+* The **Publish** workflow (`.github/workflows/publish.yml`) turns a tag into
+  the artifacts: it builds them (`uv build`) and uploads them to PyPI with
+  **trusted publishing** (`id-token: write`, no secret in the repository). The
+  checkout needs the tags (`fetch-depth: 0`) and the workflow refuses to
+  publish a version that is not a release one (a development version means
+  that the checkout is not at the tag).
 * The `review` job (JetBrains Junie) uses the **free** model of the account — the
   workflow pins no `model`. When the job fails with *"Insufficient account
   balance"*, the account is out of credits; the quality gates still decide, the
