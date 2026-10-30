@@ -27,6 +27,7 @@ from airllm_ollama.exceptions import (
     ModelInitializationError,
     ModelMismatchError,
 )
+from airllm_ollama.model_metadata import has_own_output_head
 from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
 
@@ -237,6 +238,13 @@ def default_model_factory(settings: Settings) -> AirLLMModelLike:
         raise ModelInitializationError(
             f"Failed to initialise the AirLLM model '{model_path}': {exc}"
         ) from exc
+    if is_mlx_backend(model) and not has_own_output_head(model_path):
+        raise ModelInitializationError(
+            f"The checkpoint '{model_path}' ties its embeddings: it has no 'lm_head.weight' of "
+            "its own, and the MLX backend of AirLLM cannot load it. Untie the checkpoint (the "
+            "README describes how) or serve a model whose output head is not tied to its "
+            "embedding."
+        )
     return cast("AirLLMModelLike", model)
 
 

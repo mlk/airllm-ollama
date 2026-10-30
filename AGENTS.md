@@ -216,6 +216,11 @@ src/airllm_ollama/
   engine converts the token ids (`mx.array(...)`) and sets the limit. Without
   a `num_predict` in the request, the limit is `AIRLLM_OLLAMA_MAX_SEQ_LEN`
   (512) — the transformers backend has no such default.
+* The MLX backend always loads the output head of the checkpoint, so it cannot
+  load a model that **ties its embeddings** (every SmolLM2 model does).
+  `model_metadata.has_own_output_head()` reads the header of the checkpoint
+  and `default_model_factory` refuses such a checkpoint with a clear message
+  (issue #77). The torch backends tie the embeddings themselves.
 * Model references follow Ollama's `name:tag` convention. `model_names_match()`
   accepts any tag when the served model has none, but demands an exact tag
   when the served model declares one (`llama3.2:1b` ≠ `llama3.2:70b`).
