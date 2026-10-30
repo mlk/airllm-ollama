@@ -16,6 +16,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 # The files a checkpoint needs: the configuration, the tokenizer and the
@@ -24,7 +25,7 @@ from pathlib import Path
 DEFAULT_PATTERNS: tuple[str, ...] = (
     "*.json",
     "*.safetensors",
-    "tokenizer.model",
+    "*.model",
     "merges.txt",
     "vocab.json",
     "chat_template.jinja",
@@ -77,15 +78,34 @@ def download_model(
             token=token,
         )
     )
+    # Only the files of the checkpoint are reported: the directory can hold
+    # more (the shards of AirLLM, for example).
     files = tuple(
         sorted(
-            item.relative_to(directory).as_posix()
-            for item in directory.rglob("*")
-            if item.is_file() and ".cache" not in item.parts
+            name
+            for name in (
+                item.relative_to(directory).as_posix()
+                for item in directory.rglob("*")
+                if item.is_file() and ".cache" not in item.parts
+            )
+            if _matches(name, patterns)
         )
     )
     size = sum((directory / name).stat().st_size for name in files)
     return Download(model=model, path=directory, files=files, size=size)
+
+
+def _matches(name: str, patterns: Sequence[str]) -> bool:
+    """Return whether a file of the checkpoint matches one of the patterns.
+
+    Args:
+        name: The name of the file, relative to the checkpoint.
+        patterns: The patterns of the files to download.
+
+    Returns:
+        ``True`` when the file is one of the checkpoint's files.
+    """
+    return any(fnmatch(name, pattern) for pattern in patterns)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

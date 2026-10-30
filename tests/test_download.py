@@ -59,6 +59,26 @@ def test_the_download_holds_the_files_the_model_needs(
     assert download.size == 8 + len("""{"architectures": ["LlamaForCausalLM"]}""")
 
 
+def test_only_the_files_of_the_checkpoint_are_reported(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The shards of AirLLM are not part of the download."""
+
+    def snapshot_download(repo: str, **kwargs: Any) -> str:
+        """Write a checkpoint with a file that is not part of it."""
+        directory = _write_checkpoint(tmp_path / "checkpoint")
+        (directory / "splitted_model").mkdir()
+        (directory / "splitted_model" / "model.layers.0.mlx.npz").write_bytes(b"\x00" * 16)
+        return str(directory)
+
+    mocker.patch("huggingface_hub.snapshot_download", side_effect=snapshot_download)
+
+    download = download_model("some/model", tmp_path / "checkpoint")
+
+    assert download.files == ("config.json", "model.safetensors")
+    assert download.size == 8 + len("""{"architectures": ["LlamaForCausalLM"]}""")
+
+
 def test_the_download_reports_where_the_checkpoint_is(
     tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -96,9 +96,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.check:
-        return check(args.url, args.timeout)
     # The arguments win over the environment variables and over the `.env` file.
+    # They are applied before the check, so that `--host` and `--port` tell it
+    # where to look.
     apply_overrides(
         {
             "model_name": args.model,
@@ -108,6 +108,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "port": args.port,
         }
     )
+    if args.check:
+        return check(args.url, args.timeout)
     serve()
     return 0
 
