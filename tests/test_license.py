@@ -60,4 +60,5 @@ def test_the_copyright_names_the_author_of_the_package() -> None:
     author = cast("list[dict[str, str]]", project["authors"])[0]["name"]
 
     text = LICENSE.read_text(encoding="utf-8")
-    assert re.search(rf"Copyright \(c\) \d{{4}} {re.escape(author)}", text)
+    # The copyright may name a range of years ("Copyright (c) 2026-2027 ...").
+    assert re.search(rf"Copyright \(c\) \d{{4}}(?:-\d{{4}})? {re.escape(author)}", text)
