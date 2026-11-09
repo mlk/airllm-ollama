@@ -17,7 +17,7 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The review diffs against the base branch, so the history has to be
           # there. The repository is small — the full history costs nothing.
