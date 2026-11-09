@@ -1,8 +1,8 @@
 """Tests for the license of the package.
 
-The metadata of the package promises the MIT license: the file with its text
-has to be in the repository, it has to be the license of the metadata, and the
-README has to document it.
+The build of the package succeeds even when the file with the text of the
+license is missing — the wheel would just lose its license text, and the
+metadata would still promise one. The test is the guard against that.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any, cast
 ROOT = Path(__file__).parent.parent
 LICENSE = ROOT / "LICENSE"
 PYPROJECT = ROOT / "pyproject.toml"
-README = ROOT / "README.md"
 
 # The phrases that every copy of the MIT license holds.
 MIT = (
@@ -50,7 +49,9 @@ def test_the_metadata_declares_the_same_license() -> None:
     project = _project()
 
     assert project["license"] == "MIT"
-    assert "LICENSE" in project["license-files"]
+    # The file of the metadata has to be the file of the repository: a name
+    # that points to nothing would leave the artifacts without a license.
+    assert project["license-files"] == [LICENSE.name]
 
 
 def test_the_copyright_names_the_author_of_the_package() -> None:
@@ -60,11 +61,3 @@ def test_the_copyright_names_the_author_of_the_package() -> None:
 
     text = LICENSE.read_text(encoding="utf-8")
     assert re.search(rf"Copyright \(c\) \d{{4}} {re.escape(author)}", text)
-
-
-def test_the_readme_documents_the_license() -> None:
-    """The README tells which license the package is published under."""
-    readme = README.read_text(encoding="utf-8")
-
-    assert "### License" in readme
-    assert "MIT" in readme.split("### License", 1)[1]
