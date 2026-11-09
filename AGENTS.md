@@ -9,6 +9,10 @@ Guidance for AI agents (and humans) working in this repository.
 at this service exactly as they would at Ollama (`/api/tags`, `/api/generate`,
 `/api/chat`).
 
+The package is published under the **MIT license**: the text is in `LICENSE`, the
+metadata of the package declares it (`license = "MIT"` and
+`license-files = ["LICENSE"]`) and `tests/test_license.py` pins both.
+
 The GitHub issue tracker is the source of truth for scope. Issues are grouped into
 milestones (epics):
 
