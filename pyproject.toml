@@ -4,7 +4,8 @@ dynamic = ["version"]
 description = "Ollama-compatible REST API wrapper powered by AirLLM inference."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Michael Lloyd Lee" }]
 keywords = ["ollama", "airllm", "llm", "api", "fastapi"]
 classifiers = [
@@ -53,7 +54,9 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# hatchling 1.27 is the first version that reads the SPDX expression of the
+# license (`license = "MIT"`).
+requires = ["hatchling>=1.27", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
