@@ -908,3 +908,13 @@ tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml
 ```
 
+### License
+
+The package is published under the **MIT license**. The text is in
+[`LICENSE`](LICENSE), and the metadata of the package declares it:
+
+```toml
+license = "MIT"
+license-files = ["LICENSE"]
+```
+
