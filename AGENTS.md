@@ -517,3 +517,12 @@ The maintainer is on a **metered connection** — never download large artifacts
   it apart from a default.
 * Cover the happy path **and** the error paths (validation errors, model mismatch,
   upstream failures) — the acceptance criteria ask for ≥ 80 % coverage.
+* **Not every change needs a test.** A change that touches no code of the
+  package — the prose of the documentation, a comment, a static file — is read
+  by a human: a test that repeats the content of the file adds nothing, and it
+  is noise in the suite.
+* **A test earns its keep when a wrong value breaks something silently.** The
+  build of the package succeeds even when the `LICENSE` file is missing (the
+  wheel would just lose its license text), so the tests pin it — the same
+  holds for the workflows of the CI and for the configuration of Dependabot:
+  nothing else would notice that they stopped working.
