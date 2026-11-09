@@ -818,6 +818,24 @@ uv run mypy .                # static type checking (strict)
 uv run pytest -q             # tests + coverage gate
 ```
 
+### Keeping the dependencies up to date
+
+[Dependabot](https://docs.github.com/en/code-security/dependabot) opens the
+pull requests that keep the dependencies of the repository up to date. The
+configuration lives in `.github/dependabot.yml`:
+
+| Ecosystem | What it updates |
+| --- | --- |
+| `uv` | `pyproject.toml` and `uv.lock` — the Python packages and their pins |
+| `github-actions` | The actions of the workflows, in one pull request |
+
+Both run **weekly**. The pull requests go through the same quality gates as
+every other change, so a broken update fails the CI instead of the release.
+
+The commit messages follow the conventions of the repository: `chore(deps)` for
+the packages, `chore(deps-dev)` for the packages of the `dev` group and
+`chore(ci)` for the actions.
+
 ### Creating a release
 
 The version of the package is the **git tag** — there is no version in

@@ -68,6 +68,22 @@ export PATH="$HOME/.local/bin:$PATH"
 Never edit `uv.lock` by hand. Always commit `pyproject.toml` **and** `uv.lock`
 together.
 
+### Dependabot
+
+[Dependabot](https://docs.github.com/en/code-security/dependabot) keeps the
+dependencies up to date. The configuration lives in `.github/dependabot.yml` and
+covers two ecosystems: `uv` (`pyproject.toml` and `uv.lock`) and
+`github-actions` (the actions of the workflows, grouped into one pull request).
+Both run weekly.
+
+* The pull requests of Dependabot go through the same quality gates as every
+  other change — a broken update fails the CI, not the release.
+* The commit messages follow the conventions of the repository: `chore(deps)`,
+  `chore(deps-dev)` and `chore(ci)`.
+* A pull request of Dependabot that updates the manifest **and** the lock file
+  is a normal change: never edit `uv.lock` by hand to "fix" it — run `uv lock`.
+* The configuration is pinned by `tests/test_dependabot.py`.
+
 ## Quality gates (all enforced in CI)
 
 * **ruff** — line length 100, `src` layout, rule set `E,W,F,I,N,UP,B,C4,SIM,ANN,D,RUF,PT`
