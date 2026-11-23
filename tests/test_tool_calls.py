@@ -584,3 +584,12 @@ def test_a_heading_boundary_stops_a_code_span() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_an_unterminated_html_comment_is_not_a_call() -> None:
+    raw = '<!-- example\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
