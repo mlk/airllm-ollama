@@ -78,7 +78,9 @@ def test_the_ecosystem_covers_the_actions_of_the_workflows() -> None:
     """
     update = _ecosystems(_config())["github-actions"]
 
+    # An `ignore` or an `allow` list would exclude the action just as silently.
     assert "ignore" not in update
+    assert "allow" not in update
     assert "exclude-patterns" not in update.get("groups", {}).get("actions", {})
 
     workflows = ROOT / ".github" / "workflows"

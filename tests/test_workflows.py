@@ -7,6 +7,7 @@ pin the parts that matter.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -104,8 +105,7 @@ def test_the_review_is_run_by_the_ollama_action() -> None:
     # The action is pinned to a commit SHA: a tag can be moved.
     action = next(use for use in uses if use.startswith("mlk/ollama-review-action@"))
     sha = action.removeprefix("mlk/ollama-review-action@").split("#")[0].strip()
-    assert len(sha) == 40, f"the action is not pinned to a commit SHA: {sha}"
-    assert int(sha, 16) >= 0, f"the commit SHA is not a hexadecimal string: {sha}"
+    assert re.fullmatch(r"[0-9a-f]{40}", sha), f"the action is not pinned to a commit SHA: {sha}"
 
     # The API key of Ollama Cloud is a secret of the repository.
     assert "OLLAMA_API_KEY" in text
