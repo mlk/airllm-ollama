@@ -180,3 +180,30 @@ def test_a_closing_marker_without_a_valid_body_is_skipped() -> None:
 
     assert text == "<tool_call>garbage</tool_call>"
     assert [call.function.name for call in calls] == ["f"]
+
+
+def test_a_lone_surrogate_in_the_arguments_is_rejected() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": {"text": "\\ud800"}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_lone_surrogate_in_the_name_is_rejected() -> None:
+    raw = '<tool_call>{"name": "\\ud800", "arguments": {}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_surrogate_pair_is_accepted() -> None:
+    text, calls = extract_tool_calls(
+        '<tool_call>{"name": "f", "arguments": {"text": "\\ud83d\\ude00"}}</tool_call>'
+    )
+
+    assert text == ""
+    assert calls[0].function.arguments == {"text": "😀"}

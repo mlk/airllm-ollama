@@ -453,8 +453,12 @@ src/airllm_ollama/
 * The answer of the model is parsed for `<tool_call>{...}</tool_call>` blocks
   (`tool_calls.extract_tool_calls()`): a valid block is removed from the text
   and reported as `tool_calls`; an invalid block stays in the text untouched.
-  Arguments may be a JSON object or a JSON-encoded string. Parsing happens
-  only when the request offered tools.
+  Arguments may be a JSON object or a JSON-encoded string; non-finite numbers
+  and unpaired surrogates are rejected. Parsing happens when the request
+  offered tools or the history already carries a tool exchange. Templates
+  that render only assistant `content` (SmolLM3) get the calls inlined into
+  the content — detected via the `chat_template` source — so the history is
+  never silently emptied.
 * The parsing happens in the non-streaming path only. Streaming (#103) and
   the OpenAI wire format (`/v1/chat/completions`, #104) are separate tickets.
 * The `tools` capability is opt-in (`AIRLLM_OLLAMA_CAPABILITIES`), like

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from airllm_ollama.schemas.tools import ToolCall, ToolDefinition, ToolFunction
+from airllm_ollama.schemas.tools import ToolCall, ToolDefinition
 
 # The system message is merged into the first user turn with this separator —
 # the same one the plain join of a model without a template uses.
@@ -105,25 +105,29 @@ def _tools_line(tools: Sequence[ToolDefinition]) -> str:
     return f"Tools: {payload}"
 
 
-def _tools_from_history(messages: Sequence[ChatTurn]) -> list[ToolDefinition] | None:
-    """Derive the tools of a history that carries tool calls.
+def has_tool_material(messages: Sequence[ChatTurn]) -> bool:
+    """Check whether the history carries tool calls or tool results."""
+    return any(message.tool_calls or message.role == "tool" for message in messages)
 
-    A follow-up request may omit the ``tools`` array even though the history
-    already holds a tool call and its result — the model cannot render that
-    history without a tool-aware template, so the tools it called are read
-    back from the history (name only).
+
+def _template_supports_tool_calls(tokenizer: object) -> bool:
+    """Tell whether the chat template of the model renders tool calls.
+
+    Templates that render tool calls reference ``tool_calls`` (Qwen, Hermes,
+    ...). A template that does not (SmolLM3 renders only the content of an
+    assistant message) silently drops the calls from the history — for those
+    the calls are inlined into the content instead, in the same ``<tool_call>``
+    format the model was trained to emit.
     """
-    names: list[str] = []
-    for message in messages:
-        candidates = [call.function.name for call in message.tool_calls]
-        if message.tool_name:
-            candidates.append(message.tool_name)
-        for name in candidates:
-            if name not in names:
-                names.append(name)
-    if not names:
-        return None
-    return [ToolDefinition(function=ToolFunction(name=name)) for name in names]
+    raw = getattr(tokenizer, "chat_template", None)
+    if raw is None:
+        # Unknown template source: assume it renders the tool calls.
+        return True
+    if isinstance(raw, dict):
+        # A dict of named templates (e.g. Llama 3.1): the tool-aware variant
+        # renders the tool calls.
+        return any("tool_calls" in str(value) for value in raw.values())
+    return "tool_calls" in str(raw)
 
 
 def render_transcript(
@@ -198,9 +202,6 @@ def apply_chat_template(
 
     The tools of the request are passed to the template as ``tools`` — the
     chat templates of the tool-calling models render them into the prompt.
-    When the request offers no tools but the history already holds a tool
-    call, the called tools are read back from the history, so the template
-    still renders it as a tool conversation.
 
     Args:
         tokenizer: The tokenizer of the model.
@@ -211,25 +212,25 @@ def apply_chat_template(
         The rendered prompt, or ``None`` when the model has no chat template
         or when the template refuses the messages.
     """
-    if tools is None:
-        tools = _tools_from_history(messages)
     template = getattr(tokenizer, "apply_chat_template", None)
     if template is None:
         return None
     render = cast("ChatTemplate", template)
-    rendered = _render_with_template(render, messages, tools)
+    supports_tool_calls = _template_supports_tool_calls(tokenizer)
+    rendered = _render_with_template(render, messages, tools, supports_tool_calls)
     if rendered is not None:
         return rendered
     merged = _merge_system_message(messages)
     if merged is None:
         return None
-    return _render_with_template(render, merged, tools)
+    return _render_with_template(render, merged, tools, supports_tool_calls)
 
 
 def _render_with_template(
     template: ChatTemplate,
     messages: Sequence[ChatTurn],
     tools: Sequence[ToolDefinition] | None = None,
+    supports_tool_calls: bool = True,
 ) -> str | None:
     """Render the messages with the template.
 
@@ -237,12 +238,15 @@ def _render_with_template(
         template: The chat template of the model.
         messages: The chat history.
         tools: The tools offered to the model, if any.
+        supports_tool_calls: Whether the template renders the tool calls of
+            an assistant message. When it does not, the calls are inlined
+            into the content, the way the model emits them.
 
     Returns:
         The rendered prompt, or ``None`` when the template refuses the
         messages.
     """
-    payload = [_message_payload(message) for message in messages]
+    payload = [_message_payload(message, supports_tool_calls) for message in messages]
     kwargs: dict[str, object] = {"tokenize": False, "add_generation_prompt": True}
     if tools:
         kwargs["tools"] = _tools_payload(tools)
@@ -257,7 +261,7 @@ def _render_with_template(
     return rendered
 
 
-def _message_payload(message: ChatTurn) -> dict[str, object]:
+def _message_payload(message: ChatTurn, supports_tool_calls: bool = True) -> dict[str, object]:
     """Render a message the way the chat templates of the models expect it.
 
     The tool calls of an assistant message are passed in the Hugging Face
@@ -266,23 +270,47 @@ def _message_payload(message: ChatTurn) -> dict[str, object]:
     tool it answers with both ``tool_name`` (Ollama's name for it) and
     ``name`` (what most templates read); templates ignore the key they do
     not know.
+
+    A template that does not render the tool calls gets them inlined into
+    the content instead — the ``<tool_call>`` block the model was trained
+    to emit — so the history is not silently emptied.
     """
     payload: dict[str, object] = {"role": message.role, "content": message.content}
-    if message.tool_calls:
-        payload["tool_calls"] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                },
-            }
-            for call in message.tool_calls
-        ]
+    if not message.tool_calls:
+        if message.tool_name is not None:
+            payload["tool_name"] = message.tool_name
+            payload["name"] = message.tool_name
+        return payload
+    if not supports_tool_calls:
+        payload["content"] = _inline_tool_calls(message.content, message.tool_calls)
+        return payload
+    payload["tool_calls"] = [
+        {
+            "type": "function",
+            "function": {
+                "name": call.function.name,
+                "arguments": call.function.arguments,
+            },
+        }
+        for call in message.tool_calls
+    ]
     if message.tool_name is not None:
         payload["tool_name"] = message.tool_name
         payload["name"] = message.tool_name
     return payload
+
+
+def _inline_tool_calls(content: str, calls: Sequence[ToolCall]) -> str:
+    """Inline the tool calls of a message as ``<tool_call>`` blocks."""
+    blocks = []
+    for call in calls:
+        body = json.dumps(
+            {"name": call.function.name, "arguments": call.function.arguments},
+            ensure_ascii=False,
+        )
+        blocks.append(f"<tool_call>\n{body}\n</tool_call>")
+    inlined = "\n".join(blocks)
+    return f"{content}\n{inlined}" if content else inlined
 
 
 def _merge_system_message(messages: Sequence[ChatTurn]) -> list[ChatTurn] | None:
@@ -337,14 +365,11 @@ def render_chat(
     Args:
         tokenizer: The tokenizer of the model.
         messages: The chat history.
-        tools: The tools offered to the model, if any. When omitted, the
-            tools are read back from the tool calls of the history, if any.
+        tools: The tools offered to the model, if any.
 
     Returns:
         The rendered prompt and how it has to be tokenized.
     """
-    if tools is None:
-        tools = _tools_from_history(messages)
     rendered = apply_chat_template(tokenizer, messages, tools)
     if rendered is None:
         return RenderedPrompt(render_transcript(messages, tools), add_special_tokens=True)

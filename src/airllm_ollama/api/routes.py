@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 
 from airllm_ollama.api.disconnect import stream_events
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
-from airllm_ollama.chat import ChatTurn
+from airllm_ollama.chat import ChatTurn, has_tool_material
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine, get_engine, model_names_match
 from airllm_ollama.exceptions import ModelMismatchError
@@ -223,11 +223,18 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
         messages, model=request.model, stop=stop or (), tools=request.tools, **options
     )
     text = apply_stop_sequences(result.text, stop)
-    content, tool_calls = extract_tool_calls(text) if request.tools else (text, [])
+    # Parse the tool calls when the request offered tools, or when the
+    # history already carries a tool exchange — the model is then expected
+    # to answer in that format.
+    parse_tools = bool(request.tools) or has_tool_material(messages)
+    content, tool_calls = extract_tool_calls(text) if parse_tools else (text, [])
     if tool_calls:
-        # A message that calls a tool carries no content, and the generation
-        # ends the turn — Ollama has no tool_calls done reason.
-        content = ""
+        # A message that calls a tool carries no content; a malformed block
+        # the parser could not extract is kept so it is not silently lost.
+        # Ollama has no tool_calls done reason, so the turn ends with
+        # "stop".
+        leftover = content.strip()
+        content = leftover if ("<tool_call" in leftover or "</tool_call" in leftover) else ""
         done_reason = "stop"
     else:
         done_reason = generation_done_reason(result, options)

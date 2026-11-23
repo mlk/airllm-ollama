@@ -430,29 +430,52 @@ class FakeToolTokenizer:
         return "<​|im_start|>assistant\n"
 
 
-def test_the_tools_are_read_back_from_the_history_when_none_are_offered() -> None:
-    """A follow-up request without tools still renders the tool-aware prompt."""
-    tokenizer = FakeToolTokenizer()
+class ContentOnlyTokenizer:
+    """Tokenizer whose template renders the content and ignores tool calls."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.chat_template = "{{ message.content }}"
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the content of the messages, like SmolLM3 does."""
+        self.renderings.append(list(messages))
+        return "rendered"
+
+
+def test_a_template_that_ignores_tool_calls_gets_them_inlined() -> None:
+    """A content-only template sees the calls as part of the content."""
+    tokenizer = ContentOnlyTokenizer()
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assert tokenizer.tools == [
-        {
-            "type": "function",
-            "function": {"name": "get_weather", "description": "", "parameters": {}},
-        },
-    ]
+    assistant = tokenizer.renderings[0][1]
+    assert "tool_calls" not in assistant
+    assert (
+        '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+        in (assistant["content"])
+    )
 
 
-def test_the_transcript_lists_the_tools_from_the_history() -> None:
-    rendered = render_chat(NeverTemplateTokenizer(), TOOL_MESSAGES)
+def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
+    """A tool-aware template gets the structured payload, not the inlined one."""
 
-    assert rendered.text.startswith('Tools: [{"type": "function"')
-    assert "Tool[get_weather]: 22°C" in rendered.text
+    class ToolAwareTokenizer(ContentOnlyTokenizer):
+        """Tokenizer whose template references `tool_calls`."""
 
+        def __init__(self) -> None:
+            """Set a template that renders the tool calls."""
+            super().__init__()
+            self.chat_template = "{{ message.tool_calls }}"
 
-class NeverTemplateTokenizer:
-    """Tokenizer double without a usable template."""
+    tokenizer = ToolAwareTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assistant = tokenizer.renderings[0][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert "<tool_call>" not in assistant["content"]
 
 
 def test_the_template_receives_an_empty_description_when_none_is_declared() -> None:

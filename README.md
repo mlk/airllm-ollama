@@ -649,11 +649,17 @@ How the history is rendered for the model:
   (`{"type": "function", "function": {"name", "arguments": {...}}}`), tool
   results as `{"role": "tool", "content": ..., "tool_name": ...}` (the
   `tool_name` is repeated as `name`, which is what most templates read).
+  Templates that render only the content of an assistant message (e.g.
+  SmolLM3) are detected and the calls are inlined into the content as
+  `<tool_call>` blocks instead, so the history is never silently emptied.
 * The answer is parsed for `<tool_call>{...}</tool_call>` blocks — the
   convention of the tool-calling models (Hermes, Qwen, ...). `arguments` may
-  be a JSON object or a JSON-encoded string. When at least one valid call is
-  found, it is reported in `tool_calls` and `content` is empty; text that does
-  not hold a valid call is left in `content` untouched.
+  be a JSON object or a JSON-encoded string. Parsing happens when the request
+  offers tools or the history already carries a tool exchange. When at least
+  one valid call is found, it is reported in `tool_calls` and `content` is
+  empty (a malformed call sitting next to a valid one is kept in `content` so
+  it is not silently dropped); text that is not a valid call is left in
+  `content` untouched.
 
 Notes and limits:
 

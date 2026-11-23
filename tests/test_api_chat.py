@@ -424,3 +424,48 @@ def test_chat_forwards_the_tool_history_to_the_engine(client: TestClient, engine
         ),
         ChatTurn("tool", "22C", tool_name="get_weather"),
     ]
+
+
+def test_chat_keeps_a_malformed_call_alongside_a_valid_one(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text=(
+            '<tool_call>{"broken": true</tool_call>'
+            '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+        ),
+        prompt_tokens=7,
+        generated_tokens=3,
+    )
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES, "tools": TOOLS})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [call["function"]["name"] for call in payload["message"]["tool_calls"]] == [
+        "get_weather"
+    ]
+    assert '<tool_call>{"broken": true</tool_call>' in payload["message"]["content"]
+
+
+def test_chat_parses_tool_calls_from_a_tool_history_without_tools(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text='<tool_call>{"name": "get_weather", "arguments": {"city": "Lyon"}}</tool_call>',
+        prompt_tokens=7,
+        generated_tokens=3,
+    )
+    messages = [
+        {"role": "user", "content": "Weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}],
+        },
+        {"role": "tool", "content": "22C", "tool_name": "get_weather"},
+    ]
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": messages})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"]["tool_calls"][0]["function"]["arguments"] == {"city": "Lyon"}

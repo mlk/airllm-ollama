@@ -120,9 +120,30 @@ def _skip_whitespace(text: str, position: int) -> int:
     return position
 
 
+def _has_unpaired_surrogate(value: object) -> bool:
+    """Detect strings that cannot be encoded as UTF-8.
+
+    The JSON decoder combines well-formed surrogate escape pairs, so a code
+    unit in the surrogate range means an unpaired surrogate — the value
+    cannot be serialized by a UTF-8 response.
+    """
+    if isinstance(value, str):
+        return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+    if isinstance(value, dict):
+        return any(
+            _has_unpaired_surrogate(key) or _has_unpaired_surrogate(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_has_unpaired_surrogate(item) for item in value)
+    return False
+
+
 def _to_tool_call(data: object) -> ToolCall | None:
     """Validate the decoded JSON object of a tool call."""
     if not isinstance(data, dict):
+        return None
+    if _has_unpaired_surrogate(data):
         return None
     name = data.get("name")
     if not isinstance(name, str) or not name.strip():
