@@ -36,12 +36,17 @@ _MARKDOWN = MarkdownIt("commonmark")
 # call inside any of these is an example, never an action. An unterminated
 # element swallows the rest of the text (like an unterminated comment does
 # in HTML), so it is still not executable.
-_HTML_SPAN = re.compile(
-    r"<!--.*?(?:-->|$)|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?(?:</\1\s*>|$)",
+_THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
+
+# Inline HTML that is all example text: comments and raw-text elements
+# *within a paragraph*. Block-level HTML is handled by the CommonMark token
+# stream (an unterminated block swallows the rest of the text there); this
+# pattern only covers inline HTML, which the block parser does not report.
+# An unterminated comment still swallows the rest of the text, like HTML.
+_INLINE_HTML = re.compile(
+    r"<!--.*?(?:-->|$)|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?</\1\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-
-_THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
 
 
 def _is_escaped(text: str, position: int) -> bool:
@@ -170,11 +175,15 @@ def _inline_code_regions(
     return regions
 
 
-def _parse_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the code block spans and all top-level block spans of the text.
+def _parse_blocks(
+    text: str, include_html: bool
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the block code spans and the inline-block spans of the text.
 
     Inline code spans may not cross a block boundary, so the caller also
-    needs the boundaries of every block.
+    needs the boundaries of every block. HTML blocks are only honoured on
+    the second pass — the first pass must see ``<think>`` tags even when an
+    HTML block would swallow them.
     """
     try:
         tokens = _MARKDOWN.parse(text)
@@ -188,32 +197,45 @@ def _parse_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int
         if token.map is None:
             continue
         span = (line_starts[token.map[0]], line_starts[token.map[1]])
-        if token.type in ("fence", "code_block"):
+        if token.type in ("fence", "code_block") or (include_html and token.type == "html_block"):
             blocks.append(span)
         elif token.type == "inline":
             # Code spans may not cross a block boundary; inline tokens are
             # the smallest blocks that carry inline markup.
             segments.append(span)
-    regions = list(blocks)
-    regions.extend(match.span() for match in _HTML_SPAN.finditer(text))
-    return regions, segments
+    return blocks, segments
+
+
+def _mask(text: str, regions: list[tuple[int, int]]) -> str:
+    """Replace the regions with spaces, keeping the newlines."""
+    chars = list(text)
+    for start, end in regions:
+        for index in range(start, end):
+            if chars[index] != "\n":
+                chars[index] = " "
+    return "".join(chars)
 
 
 def _code_regions(text: str) -> list[tuple[int, int]]:
     """Return the spans of the code regions of the text.
 
-    Fenced and indented code blocks, HTML spans, reasoning blocks and
-    inline code spans are not calls — an example the model writes for the
-    user is never executed. Markdown decides what counts as a code region:
-    blockquotes, headings, list items and nested fences all follow the same
-    rules as a rendered document.
+    Fenced and indented code blocks, inline code spans and reasoning blocks
+    are not calls — an example the model writes for the user is never
+    executed. Markdown decides what counts as a code region: blockquotes,
+    headings, list items and nested fences all follow the same rules as a
+    rendered document. Reasoning blocks are masked before the rest of the
+    analysis so that markup inside them is never parsed as Markdown.
     """
-    blocks, segments = _parse_blocks(text)
-    inline = _inline_code_regions(text, _merge_regions(blocks), segments)
-    blocked = _merge_regions(blocks + inline)
-    valid = _valid_call_spans(text, blocked)
-    thinks = _think_regions(text, _merge_regions(blocked + valid))
-    return _merge_regions(blocked + thinks)
+    pre_blocks, pre_segments = _parse_blocks(text, include_html=False)
+    pre_inline = _inline_code_regions(text, _merge_regions(pre_blocks), pre_segments)
+    pre_blocked = _merge_regions(pre_blocks + pre_inline)
+    valid = _valid_call_spans(text, pre_blocked)
+    think = _think_regions(text, _merge_regions(pre_blocked + valid))
+    masked = _mask(text, think)
+    blocks, segments = _parse_blocks(masked, include_html=True)
+    blocks.extend(match.span() for match in _INLINE_HTML.finditer(masked))
+    inline = _inline_code_regions(masked, _merge_regions(blocks), segments)
+    return _merge_regions(_merge_regions(blocks + inline) + think)
 
 
 def _valid_call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:

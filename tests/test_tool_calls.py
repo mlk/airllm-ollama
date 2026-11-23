@@ -593,3 +593,21 @@ def test_an_unterminated_html_comment_is_not_a_call() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_a_call_after_a_closed_html_block_is_parsed() -> None:
+    raw = '<div>\n</div>\n\n<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>\n'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_call_inside_an_html_block_is_not_executed() -> None:
+    # CommonMark: an HTML block continues until a blank line, so the call is
+    # part of the markup and is not executed.
+    raw = '<div>\n</div>\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
