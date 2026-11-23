@@ -92,7 +92,7 @@ def test_api_generate_completes_the_prompt(service: TestClient, factory: FakeFac
     assert payload["done"] is True
     assert payload["done_reason"] == "stop"
     assert payload["prompt_eval_count"] == len(TOKEN_IDS)
-    assert payload["eval_count"] == 0
+    assert payload["eval_count"] == len(TOKEN_IDS)
     assert factory.model.tokenizer.prompts == [PROMPT]
 
 
@@ -406,7 +406,7 @@ def test_api_generate_streams_the_answer(service: TestClient, factory: FakeFacto
     assert "".join(event["response"] for event in events[:-1]) == "the sky is blue"
     assert events[0]["done"] is False
     assert events[-1]["done"] is True
-    assert events[-1]["eval_count"] == 0
+    assert events[-1]["eval_count"] == len(TOKEN_IDS)
 
 
 def test_a_stream_gives_the_model_the_abort_event(

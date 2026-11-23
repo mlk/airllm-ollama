@@ -35,6 +35,42 @@ def _fence_run(text: str, start: int) -> int:
     return len(text[start:]) - len(text[start:].lstrip(char))
 
 
+def _indented_code_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the indented code blocks of the text.
+
+    A line indented by at least four spaces (or a tab), following a blank
+    line or another code line, is a code block — an example in it is not a
+    tool call. Lines inside a paragraph are not code (CommonMark: an
+    indented line cannot interrupt a paragraph).
+    """
+    regions: list[tuple[int, int]] = []
+    line_start = 0
+    prev_blank = True
+    in_code = False
+    for line in text.splitlines(keepends=True):
+        line_end = line_start + len(line)
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" \t"))
+        indented = indent >= 4 or line.startswith("\t")
+        if not stripped:
+            if in_code and regions:
+                regions[-1] = (regions[-1][0], line_end)
+            else:
+                prev_blank = True
+        elif indented and (prev_blank or in_code):
+            if in_code and regions:
+                regions[-1] = (regions[-1][0], line_end)
+            else:
+                regions.append((line_start, line_end))
+            in_code = True
+            prev_blank = False
+        else:
+            in_code = False
+            prev_blank = False
+        line_start = line_end
+    return regions
+
+
 def _skip_fence(text: str, start: int) -> int:
     """Return the offset after the fenced code block that opens at ``start``.
 
@@ -116,10 +152,21 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         holds no valid tool call, it is returned unchanged.
     """
     decoder = _strict_decoder()
+    indented = _indented_code_regions(text)
+    indented_index = 0
     calls: list[ToolCall] = []
     spans: list[tuple[int, int]] = []
     position = 0
     while position < len(text):
+        while indented_index < len(indented) and indented[indented_index][1] <= position:
+            indented_index += 1
+        if (
+            indented_index < len(indented)
+            and indented[indented_index][0] <= position < indented[indented_index][1]
+        ):
+            # An indented code block: an example in it is not a call.
+            position = indented[indented_index][1]
+            continue
         if text.startswith(_FENCES, position):
             # A fenced code block: an example in it is not a call.
             position = _skip_fence(text, position)

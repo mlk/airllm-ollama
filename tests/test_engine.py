@@ -39,6 +39,7 @@ from airllm_ollama.exceptions import (
     ModelInitializationError,
     ModelMismatchError,
 )
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 from airllm_ollama.stopping import StopGeneration
 from fakes import (
     TOKEN_IDS,
@@ -730,7 +731,7 @@ def test_generation_result_reports_the_statistics() -> None:
 
     assert result.text == f"decoded:{TOKEN_IDS}"
     assert result.prompt_tokens == len(TOKEN_IDS)
-    assert result.generated_tokens == 0
+    assert result.generated_tokens == len(TOKEN_IDS)
     assert result.total_duration_ns > 0
     assert result.load_duration_ns > 0
 
@@ -1136,3 +1137,32 @@ def test_generate_chat_stream_accepts_legacy_tuple_messages() -> None:
     list(engine.generate_chat_stream([("user", "Hello")]))
 
     assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+
+
+def test_generate_chat_decodes_only_the_generated_tokens() -> None:
+    """A tool history in the prompt is not decoded as part of the answer."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    result = engine.generate_chat(
+        [
+            ChatTurn("user", "Weather?"),
+            ChatTurn(
+                "assistant",
+                "",
+                tool_calls=(
+                    ToolCall(
+                        function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                    ),
+                ),
+            ),
+            ChatTurn("tool", "22C", tool_name="get_weather"),
+            ChatTurn("user", "And tomorrow?"),
+        ]
+    )
+
+    assert result.text == f"decoded:{TOKEN_IDS}"
+    assert result.prompt_tokens == len(TOKEN_IDS)
+    assert result.generated_tokens == len(TOKEN_IDS)
+    # The decoder saw only the generated tokens, not the prompt with its history.
+    assert model.tokenizer.decoded[-1] == [list(TOKEN_IDS)]

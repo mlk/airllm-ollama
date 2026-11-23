@@ -377,3 +377,40 @@ def test_a_call_after_a_multiline_code_span_is_still_parsed() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_an_indented_code_block_is_not_a_call() -> None:
+    raw = 'Example:\n\n    <tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_tab_indented_code_block_is_not_a_call() -> None:
+    raw = 'Example:\n\n\t<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_indented_line_inside_a_paragraph_is_not_a_code_block() -> None:
+    raw = 'Use it like this:\n    <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_call_after_an_indented_code_block_is_still_parsed() -> None:
+    raw = (
+        'Example:\n\n    <tool_call>{"name": "example"}</tool_call>\n\n'
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]

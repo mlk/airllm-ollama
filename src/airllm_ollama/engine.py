@@ -566,7 +566,7 @@ class AirLLMEngine:
         prompt_started = time.perf_counter_ns()
         raw_output, prompt_tokens = self._run(model, prompt, stop, **kwargs)
         prompt_duration = time.perf_counter_ns() - prompt_started
-        text = self._decode(model, raw_output)
+        text = self._decode(model, raw_output, prompt_tokens)
         generated_tokens = self._count_generated_tokens(model, raw_output, prompt_tokens)
         eval_duration = time.perf_counter_ns() - prompt_started
         return GenerationResult(
@@ -801,7 +801,7 @@ class AirLLMEngine:
             raise self._generation_error(failure[0]) from failure[0]
 
         raw_output = outcome[0] if outcome else None
-        text = self._decode(model, raw_output) if raw_output is not None else ""
+        text = self._decode(model, raw_output, prompt_tokens) if raw_output is not None else ""
         if not streamed and text:
             # The backend does not support streaming: deliver the whole answer.
             yield StreamChunk(text=text)
@@ -893,11 +893,22 @@ class AirLLMEngine:
         return max(_sequence_length(raw_output) - prompt_tokens, 0)
 
     @staticmethod
-    def _decode(model: AirLLMModelLike, raw_output: object) -> str:
-        """Decode raw generation output into text."""
+    def _decode(model: AirLLMModelLike, raw_output: object, prompt_tokens: int) -> str:
+        """Decode the generated tokens of a raw output.
+
+        The torch backend returns the whole sequence — the prompt included —
+        so the prompt tokens are sliced off before decoding; otherwise the
+        model would see its own prompt (and everything in it, e.g. a tool
+        history) as if it had generated it. The string outputs of the MLX
+        backend already hold only the generated tokens.
+        """
         if isinstance(raw_output, str):
             return raw_output
-        decoded = model.tokenizer.batch_decode(raw_output, skip_special_tokens=True)
+        sequences = _as_nested_list(raw_output)
+        generated = [row[prompt_tokens:] for row in sequences]
+        if not any(generated):
+            return ""
+        decoded = model.tokenizer.batch_decode(generated, skip_special_tokens=True)
         if not decoded:
             return ""
         return decoded[0]

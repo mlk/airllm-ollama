@@ -94,7 +94,8 @@ class FakeTokenizer:
     def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:
         """Return a deterministic decoding of ``sequences``."""
         self.decoded.append(sequences)
-        return [f"decoded:{sequences}"]
+        rows = sequences if isinstance(sequences, list) else [sequences]
+        return [f"decoded:{list(row) if isinstance(row, list) else row}" for row in rows]
 
     def apply_chat_template(self, messages: object, **kwargs: object) -> str:
         """Render the messages with the chat template of the tokenizer."""
@@ -157,14 +158,13 @@ class FakeModel:
     """AirLLM model double recording how it was called."""
 
     def __init__(self, output: object = None, chunks: list[str] | None = None) -> None:
-        """Create a model returning ``output`` (token ids by default).
+        """Create a model returning ``output`` (prompt ids + generated ids).
 
-        Args:
-            output: The value the generation returns.
-            chunks: The text pieces the model streams to a streamer, if any.
+        The default output is the prompt tokens followed by fresh tokens,
+        the way a real backend returns the whole sequence.
         """
         self.tokenizer = FakeTokenizer()
-        self.output = list(TOKEN_IDS) if output is None else output
+        self.output = output
         self.chunks = chunks or []
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.forwards: list[dict[str, object]] = []
@@ -178,7 +178,16 @@ class FakeModel:
             if put is not None:
                 for chunk in self.chunks:
                     put(chunk)
-        return self.output
+        if self.output is not None:
+            return self.output
+        first = args[0] if args else None
+        if isinstance(first, dict):
+            prompt = list(first.get("input_ids", []))
+        elif isinstance(first, (list, tuple)):
+            prompt = list(first)
+        else:
+            prompt = list(TOKEN_IDS)
+        return [*prompt, *TOKEN_IDS]
 
     def forward(self, *args: object, **kwargs: object) -> object:
         """Record the forward pass and return the canned output."""
