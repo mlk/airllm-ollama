@@ -1116,3 +1116,23 @@ def test_a_failed_stream_is_reported() -> None:
 
     with pytest.raises(GenerationError):
         list(engine.generate_stream("hello"))
+
+
+def test_generate_chat_accepts_legacy_tuple_messages() -> None:
+    """The (role, content) pairs of before the structured messages keep working."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("user", "Hello")])
+
+    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+
+
+def test_generate_chat_stream_accepts_legacy_tuple_messages() -> None:
+    """The streaming path normalizes legacy pairs as well."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    list(engine.generate_chat_stream([("user", "Hello")]))
+
+    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]

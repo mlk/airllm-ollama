@@ -421,10 +421,47 @@ class FakeToolTokenizer:
     def __init__(self) -> None:
         """Initialise the recording lists."""
         self.renderings: list[list[dict[str, Any]]] = []
-        self.tools: object = None
+        self.tools: Any = None
 
     def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
         """Render the messages the way a chat template would."""
         self.renderings.append(list(messages))
         self.tools = kwargs.get("tools")
         return "<​|im_start|>assistant\n"
+
+
+def test_the_tools_are_read_back_from_the_history_when_none_are_offered() -> None:
+    """A follow-up request without tools still renders the tool-aware prompt."""
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert tokenizer.tools == [
+        {
+            "type": "function",
+            "function": {"name": "get_weather", "description": "", "parameters": {}},
+        },
+    ]
+
+
+def test_the_transcript_lists_the_tools_from_the_history() -> None:
+    rendered = render_chat(NeverTemplateTokenizer(), TOOL_MESSAGES)
+
+    assert rendered.text.startswith('Tools: [{"type": "function"')
+    assert "Tool[get_weather]: 22°C" in rendered.text
+
+
+class NeverTemplateTokenizer:
+    """Tokenizer double without a usable template."""
+
+
+def test_the_template_receives_an_empty_description_when_none_is_declared() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(
+        tokenizer,
+        [ChatTurn("user", "Hello")],
+        tools=[ToolDefinition(function=ToolFunction(name="get_weather"))],
+    )
+
+    assert tokenizer.tools[0]["function"]["description"] == ""

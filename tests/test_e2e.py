@@ -697,7 +697,7 @@ def test_api_chat_returns_the_tool_calls_of_the_model(
     assert response.status_code == 200
     payload = response.json()
     assert payload["message"]["role"] == "assistant"
-    assert payload["message"]["content"] == "Let me check."
+    assert payload["message"]["content"] == ""
     assert payload["message"]["tool_calls"] == [
         {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
     ]

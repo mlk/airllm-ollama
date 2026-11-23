@@ -224,6 +224,13 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     )
     text = apply_stop_sequences(result.text, stop)
     content, tool_calls = extract_tool_calls(text) if request.tools else (text, [])
+    if tool_calls:
+        # A message that calls a tool carries no content, and the generation
+        # ends the turn — Ollama has no tool_calls done reason.
+        content = ""
+        done_reason = "stop"
+    else:
+        done_reason = generation_done_reason(result, options)
 
     settings = get_settings()
     keep_alive = parse_keep_alive(
@@ -241,7 +248,7 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
             tool_calls=tool_calls or None,
         ),
         done=True,
-        done_reason=generation_done_reason(result, options),
+        done_reason=done_reason,
         total_duration=result.total_duration_ns,
         load_duration=result.load_duration_ns,
         prompt_eval_count=result.prompt_tokens,

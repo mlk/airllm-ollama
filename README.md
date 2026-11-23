@@ -651,8 +651,9 @@ How the history is rendered for the model:
   `tool_name` is repeated as `name`, which is what most templates read).
 * The answer is parsed for `<tool_call>{...}</tool_call>` blocks — the
   convention of the tool-calling models (Hermes, Qwen, ...). `arguments` may
-  be a JSON object or a JSON-encoded string. Text that is not a valid tool
-  call is left in `content` untouched.
+  be a JSON object or a JSON-encoded string. When at least one valid call is
+  found, it is reported in `tool_calls` and `content` is empty; text that does
+  not hold a valid call is left in `content` untouched.
 
 Notes and limits:
 

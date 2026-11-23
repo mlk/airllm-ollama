@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
-from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
+from airllm_ollama.chat import (
+    ChatTurnInput,
+    RenderedPrompt,
+    render_chat,
+    render_completion,
+    to_turn,
+)
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import (
     GenerationError,
@@ -507,7 +513,7 @@ class AirLLMEngine:
 
     def generate_chat(
         self,
-        messages: Sequence[ChatTurn],
+        messages: Sequence[ChatTurnInput],
         *,
         model: str | None = None,
         stop: Sequence[str] = (),
@@ -522,7 +528,8 @@ class AirLLMEngine:
         emitting a tool call block.
 
         Args:
-            messages: The chat history.
+            messages: The chat history. Plain ``(role, content)`` pairs are
+                accepted for backwards compatibility and normalized internally.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
@@ -543,7 +550,8 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages, tools)
+            turn_messages = [to_turn(message) for message in messages]
+            rendered = render_chat(loaded_model.tokenizer, turn_messages, tools)
             return self._run_prompt(loaded_model, rendered, started, stop=stop, **kwargs)
 
     def _run_prompt(
@@ -622,7 +630,7 @@ class AirLLMEngine:
 
     def generate_chat_stream(
         self,
-        messages: Sequence[ChatTurn],
+        messages: Sequence[ChatTurnInput],
         *,
         model: str | None = None,
         stop: Sequence[str] = (),
@@ -633,7 +641,8 @@ class AirLLMEngine:
         """Render a chat history and stream the assistant's answer.
 
         Args:
-            messages: The chat history.
+            messages: The chat history. Plain ``(role, content)`` pairs are
+                accepted for backwards compatibility and normalized internally.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
@@ -657,7 +666,8 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages, tools)
+            turn_messages = [to_turn(message) for message in messages]
+            rendered = render_chat(loaded_model.tokenizer, turn_messages, tools)
             yield from self._stream(
                 loaded_model, rendered, started, stop=stop, abort=abort, **kwargs
             )

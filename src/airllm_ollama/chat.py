@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from airllm_ollama.schemas.tools import ToolCall, ToolDefinition
+from airllm_ollama.schemas.tools import ToolCall, ToolDefinition, ToolFunction
 
 # The system message is merged into the first user turn with this separator —
 # the same one the plain join of a model without a template uses.
@@ -32,6 +32,27 @@ class ChatTurn:
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     tool_name: str | None = None
+
+
+# What the engine accepts as a message: a structured ``ChatTurn`` or a plain
+# ``(role, content)`` pair, the format used before the messages carried tool
+# calls. The pair is normalized at the engine boundary.
+ChatTurnInput = ChatTurn | tuple[str, str]
+
+
+def to_turn(message: ChatTurnInput) -> ChatTurn:
+    """Normalize a message to a ``ChatTurn``.
+
+    Args:
+        message: A structured message or a legacy ``(role, content)`` pair.
+
+    Returns:
+        The message as a ``ChatTurn``.
+    """
+    if isinstance(message, ChatTurn):
+        return message
+    role, content = message
+    return ChatTurn(role, content)
 
 
 class ChatTemplate(Protocol):
@@ -68,10 +89,12 @@ def _tools_payload(tools: Sequence[ToolDefinition]) -> list[dict[str, object]]:
     """Render the tools the way the chat templates expect them."""
     payload: list[dict[str, object]] = []
     for tool in tools:
-        function: dict[str, object] = {"name": tool.function.name}
-        if tool.function.description is not None:
-            function["description"] = tool.function.description
-        function["parameters"] = tool.function.parameters
+        function: dict[str, object] = {
+            "name": tool.function.name,
+            # Some templates concatenate the description unconditionally.
+            "description": tool.function.description or "",
+            "parameters": tool.function.parameters,
+        }
         payload.append({"type": tool.type, "function": function})
     return payload
 
@@ -80,6 +103,27 @@ def _tools_line(tools: Sequence[ToolDefinition]) -> str:
     """Render the tools as a single line of the transcript."""
     payload = json.dumps(_tools_payload(tools), ensure_ascii=False)
     return f"Tools: {payload}"
+
+
+def _tools_from_history(messages: Sequence[ChatTurn]) -> list[ToolDefinition] | None:
+    """Derive the tools of a history that carries tool calls.
+
+    A follow-up request may omit the ``tools`` array even though the history
+    already holds a tool call and its result — the model cannot render that
+    history without a tool-aware template, so the tools it called are read
+    back from the history (name only).
+    """
+    names: list[str] = []
+    for message in messages:
+        candidates = [call.function.name for call in message.tool_calls]
+        if message.tool_name:
+            candidates.append(message.tool_name)
+        for name in candidates:
+            if name not in names:
+                names.append(name)
+    if not names:
+        return None
+    return [ToolDefinition(function=ToolFunction(name=name)) for name in names]
 
 
 def render_transcript(
@@ -154,6 +198,9 @@ def apply_chat_template(
 
     The tools of the request are passed to the template as ``tools`` — the
     chat templates of the tool-calling models render them into the prompt.
+    When the request offers no tools but the history already holds a tool
+    call, the called tools are read back from the history, so the template
+    still renders it as a tool conversation.
 
     Args:
         tokenizer: The tokenizer of the model.
@@ -164,6 +211,8 @@ def apply_chat_template(
         The rendered prompt, or ``None`` when the model has no chat template
         or when the template refuses the messages.
     """
+    if tools is None:
+        tools = _tools_from_history(messages)
     template = getattr(tokenizer, "apply_chat_template", None)
     if template is None:
         return None
@@ -288,11 +337,14 @@ def render_chat(
     Args:
         tokenizer: The tokenizer of the model.
         messages: The chat history.
-        tools: The tools offered to the model, if any.
+        tools: The tools offered to the model, if any. When omitted, the
+            tools are read back from the tool calls of the history, if any.
 
     Returns:
         The rendered prompt and how it has to be tokenized.
     """
+    if tools is None:
+        tools = _tools_from_history(messages)
     rendered = apply_chat_template(tokenizer, messages, tools)
     if rendered is None:
         return RenderedPrompt(render_transcript(messages, tools), add_special_tokens=True)

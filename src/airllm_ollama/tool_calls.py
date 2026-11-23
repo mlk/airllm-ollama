@@ -17,15 +17,30 @@ client sees the same text the model produced.
 from __future__ import annotations
 
 import json
-import re
-from typing import Any
+import math
 
 from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 
-# The block a tool-calling model wraps the call in. The body may span
-# several lines and may nest braces (the arguments are an object), so the
-# pattern anchors on the markers instead of the braces.
-_TOOL_CALL_PATTERN = re.compile(r"<tool_call>(?P<body>.*?)</tool_call>", re.DOTALL)
+_OPEN = "<tool_call>"
+_CLOSE = "</tool_call>"
+_WHITESPACE = " \t\r\n"
+
+
+def _reject_constant(value: str) -> None:
+    """Reject the non-standard JSON constants (``NaN``, ``Infinity``)."""
+    raise ValueError(f"invalid constant: {value}")
+
+
+def _finite_float(value: str) -> float:
+    """Parse a float, rejecting values outside the finite range."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite number: {value}")
+    return parsed
+
+
+def _strict_decoder() -> json.JSONDecoder:
+    return json.JSONDecoder(parse_constant=_reject_constant, parse_float=_finite_float)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
@@ -39,14 +54,24 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         tool calls that were found, in the order they appear. When the text
         holds no valid tool call, it is returned unchanged.
     """
+    decoder = _strict_decoder()
     calls: list[ToolCall] = []
     spans: list[tuple[int, int]] = []
-    for match in _TOOL_CALL_PATTERN.finditer(text):
-        call = _parse_call(match.group("body"))
-        if call is None:
+    position = 0
+    while True:
+        start = text.find(_OPEN, position)
+        if start == -1:
+            break
+        found = _parse_call(text, start + len(_OPEN), decoder)
+        if found is None:
+            # Not a valid call: leave the text untouched and keep looking
+            # after this opening marker.
+            position = start + len(_OPEN)
             continue
+        call, end = found
         calls.append(call)
-        spans.append(match.span())
+        spans.append((start, end))
+        position = end
     if not calls:
         return text, []
     parts: list[str] = []
@@ -58,20 +83,45 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
     return "".join(parts).strip(), calls
 
 
-def _parse_call(body: str) -> ToolCall | None:
-    """Parse the body of a tool call block.
+def _parse_call(
+    text: str, opening_end: int, decoder: json.JSONDecoder
+) -> tuple[ToolCall, int] | None:
+    """Parse the tool call that starts at ``opening_end``.
 
     Args:
-        body: The text between ``<tool_call>`` and ``</tool_call>``.
+        text: The whole answer of the model.
+        opening_end: The offset just after the ``<tool_call>`` marker.
+        decoder: The JSON decoder that rejects non-finite numbers and the
+            non-standard constants.
 
     Returns:
-        The tool call, or ``None`` when the body is not a JSON object with a
-        name and a JSON object of arguments.
+        The tool call and the offset after the closing ``</tool_call>``, or
+        ``None`` when the text does not hold a valid call. A closing marker
+        inside a JSON string does not end the call — the JSON value decides
+        where the body ends.
     """
+    start = _skip_whitespace(text, opening_end)
     try:
-        data: Any = json.loads(body)
+        data, end = decoder.raw_decode(text, start)
     except ValueError:
         return None
+    call = _to_tool_call(data)
+    if call is None:
+        return None
+    closing = _skip_whitespace(text, end)
+    if not text.startswith(_CLOSE, closing):
+        return None
+    return call, closing + len(_CLOSE)
+
+
+def _skip_whitespace(text: str, position: int) -> int:
+    while position < len(text) and text[position] in _WHITESPACE:
+        position += 1
+    return position
+
+
+def _to_tool_call(data: object) -> ToolCall | None:
+    """Validate the decoded JSON object of a tool call."""
     if not isinstance(data, dict):
         return None
     name = data.get("name")
@@ -82,7 +132,7 @@ def _parse_call(body: str) -> ToolCall | None:
         # Some models encode the arguments as a JSON string instead of an
         # object.
         try:
-            arguments = json.loads(arguments)
+            arguments = _strict_decoder().decode(arguments)
         except ValueError:
             return None
     if arguments is None:

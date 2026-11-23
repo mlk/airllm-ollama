@@ -317,10 +317,36 @@ def test_chat_returns_the_tool_calls_of_the_model(client: TestClient, engine: An
     assert response.status_code == 200
     payload = response.json()
     assert payload["message"]["role"] == "assistant"
-    assert payload["message"]["content"] == "It is sunny."
+    assert payload["message"]["content"] == ""
     assert payload["message"]["tool_calls"] == [
         {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
     ]
+    assert payload["done_reason"] == "stop"
+
+
+def test_chat_reports_stop_when_a_tool_call_is_returned_at_the_token_limit(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text='<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>',
+        prompt_tokens=7,
+        generated_tokens=16,
+        total_duration_ns=4_000,
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": MESSAGES,
+            "tools": TOOLS,
+            "options": {"num_predict": 16},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
     assert payload["done_reason"] == "stop"
 
 

@@ -125,3 +125,58 @@ def test_a_tool_call_with_null_arguments_gets_empty_arguments() -> None:
 
     assert text == ""
     assert calls[0].function.arguments == {}
+
+
+def test_a_closing_marker_inside_a_json_string_does_not_end_the_call() -> None:
+    text, calls = extract_tool_calls(
+        '<tool_call>{"name": "save", "arguments": {"text": "</tool_call>"}}</tool_call>'
+    )
+
+    assert text == ""
+    assert calls[0].function.name == "save"
+    assert calls[0].function.arguments == {"text": "</tool_call>"}
+
+
+def test_a_non_finite_number_is_rejected() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": {"n": NaN}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_out_of_range_float_is_rejected() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": {"n": 1e999}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_non_finite_number_in_a_json_encoded_arguments_string_is_rejected() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": "{\\"n\\": Infinity}"}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_unterminated_tool_call_is_left_in_the_text() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": {}}'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_closing_marker_without_a_valid_body_is_skipped() -> None:
+    text, calls = extract_tool_calls(
+        '<tool_call>garbage</tool_call><tool_call>{"name": "f", "arguments": {}}</tool_call>'
+    )
+
+    assert text == "<tool_call>garbage</tool_call>"
+    assert [call.function.name for call in calls] == ["f"]
