@@ -818,6 +818,32 @@ uv run mypy .                # static type checking (strict)
 uv run pytest -q             # tests + coverage gate
 ```
 
+### The automated review
+
+Every pull request is reviewed by an [Ollama Cloud](https://ollama.com/cloud)
+model — `glm-5.3` — through the
+[`mlk/ollama-review-action`](https://github.com/mlk/ollama-review-action). The
+workflow lives in `.github/workflows/ollama-review.yml`:
+
+* the action reads the diff through the GitHub API and never checks the pull
+  request out, so nothing from a fork is executed;
+* every finding is posted as an **inline comment** on the line it belongs to,
+  and the assessment of the pull request as a **summary comment**;
+* the conventions of the repository (`AGENTS.md`, this `README.md` and
+  `.github/review-guidelines.md`) are read at the **base** commit and handed to
+  the model as project context.
+
+The action needs an API key as the `OLLAMA_API_KEY` secret of the repository —
+create one at [ollama.com/settings/keys](https://ollama.com/settings/keys) and
+add it with:
+
+```bash
+gh secret set OLLAMA_API_KEY --repo mlk/airllm-ollama
+```
+
+The action itself is pinned to a commit SHA. Dependabot bumps that pin in the
+weekly pull request of the `github-actions` ecosystem.
+
 ### Keeping the dependencies up to date
 
 [Dependabot](https://docs.github.com/en/code-security/dependabot) opens the
@@ -906,6 +932,8 @@ src/airllm_ollama/
 └── _version.py        # the version, written by the build (gitignored)
 tests/                 # pytest suite (unit, integration and end-to-end)
 .github/workflows/ci.yml
+.github/workflows/ollama-review.yml   # the review of the pull requests
+.github/review-guidelines.md           # the guidelines of the review
 ```
 
 ### License

@@ -1,0 +1,56 @@
+# .github/workflows/ollama-review.yml
+name: Ollama Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ollama-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # A draft is not ready to be reviewed, and a fork does not get the secrets
+    # of the repository — the action would start up without an API key.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The action reads the diff through the GitHub API and never touches the
+      # working tree, so there is no checkout: the repository is not downloaded
+      # on every push.
+      - uses: mlk/ollama-review-action@637b8047b5f317fe1576941dc98ee5475414c5f7 # v1
+        with:
+          model: glm-5.3
+          # The conventions of the repository are read from the base commit, so
+          # a pull request cannot inject its own guidance.
+          context_files: AGENTS.md,README.md,.github/review-guidelines.md
+          # AGENTS.md and the README are longer than the default of 12000
+          # characters — the review needs the whole of them.
+          context_max_chars: 40000
+          prompt: |
+            Review the pull request against the conventions of this repository.
+
+            The guidance in AGENTS.md and in .github/review-guidelines.md is
+            authoritative: the quality gates it describes (ruff, mypy --strict,
+            pytest with the 80 % coverage gate) are enforced in CI, so do not
+            report what they already catch.
+
+            Do not demand changes that the issue tracker already accounts for as
+            future work, and do not require the features that are deliberately
+            not implemented yet (streaming of the OpenAI routes, tool calls,
+            embeddings).
+
+            Judge the change against the architecture of the repository: the
+            engine owns a single model and serialises the generations, the
+            routes mirror the API of Ollama, and the optional AirLLM runtime is
+            imported lazily.
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
