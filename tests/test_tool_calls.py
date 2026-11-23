@@ -317,3 +317,34 @@ def test_a_deeply_nested_valid_call_is_accepted() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert len(calls) == 1
+
+
+def test_a_double_backtick_example_is_not_a_call() -> None:
+    raw = 'Example: ``<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>``'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_tilde_fenced_example_is_not_a_call() -> None:
+    raw = '~~~\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n~~~'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_valid_call_whose_arguments_contain_a_fence_is_not_cut_short() -> None:
+    body = (
+        '<tool_call>{"name": "save", "arguments": {"text": "look: ```\\nsome code\\n```"}}'
+        "</tool_call>\n"
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+    )
+
+    text, calls = extract_tool_calls(body)
+
+    assert [call.function.name for call in calls] == ["save", "delete_file"]
+    assert text == ""
