@@ -36,6 +36,10 @@ _MARKDOWN = MarkdownIt("commonmark")
 # call inside any of these is an example, never an action. An unterminated
 # element swallows the rest of the text (like an unterminated comment does
 # in HTML), so it is still not executable.
+# Inline HTML tags (not block-level). These are skipped entirely by the
+# code-span scanner: a backtick inside an attribute is not a code fence.
+_INLINE_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*?)?/?>")
+
 _THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
 
 # Inline HTML that is all example text: comments and raw-text elements
@@ -234,6 +238,10 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
     masked = _mask(text, think)
     blocks, segments = _parse_blocks(masked, include_html=True)
     blocks.extend(match.span() for match in _INLINE_HTML.finditer(masked))
+    # Inline HTML tags are opaque to the code-span scanner (a backtick
+    # inside a tag attribute is not a code span delimiter). The tool-call
+    # marker itself is not a valid HTML tag name, so it is never masked.
+    blocks.extend(match.span() for match in _INLINE_TAG.finditer(masked))
     inline = _inline_code_regions(masked, _merge_regions(blocks), segments)
     return _merge_regions(_merge_regions(blocks + inline) + think)
 

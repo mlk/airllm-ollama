@@ -455,7 +455,10 @@ class ContentOnlyTokenizer:
         """Render the content of the messages, like SmolLM3 does."""
         self.renderings.append(list(messages))
         return "\n".join(
-            str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            str(message.get("content", ""))
+            + "".join(str(call["function"]["arguments"]) for call in message.get("tool_calls", []))
+            for message in messages
+            if isinstance(message, dict)
         )
 
 
@@ -490,7 +493,7 @@ def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
 
     assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert assistant["content"] is None
+    assert assistant["content"] == ""
 
 
 def test_the_template_receives_an_empty_description_when_none_is_declared() -> None:
@@ -519,7 +522,13 @@ class DictTemplateTokenizer:
     def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
         """Render the messages, like a named-template tokenizer would."""
         self.renderings.append(list(messages))
-        return "rendered"
+        branch = "tool_use" if kwargs.get("tools") else "default"
+        echoed = "|".join(
+            str(tool.get("function", {}).get("name", ""))
+            for tool in kwargs.get("tools", [])
+            if isinstance(tool, dict)
+        )
+        return f"{branch}:{echoed}|" + json.dumps(messages, default=str)
 
 
 def test_a_dict_template_without_tools_selects_the_default_branch() -> None:
@@ -541,7 +550,7 @@ def test_a_dict_template_with_tools_selects_the_tool_use_branch() -> None:
 
     assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert assistant["content"] is None
+    assert assistant["content"] == ""
 
 
 class R1StyleTokenizer:

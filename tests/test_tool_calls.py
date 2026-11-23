@@ -611,3 +611,55 @@ def test_a_call_inside_an_html_block_is_not_executed() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert calls == []
+
+
+def test_an_h1_block_example_is_not_a_call() -> None:
+    raw = '<h1>\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n</h1>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_nested_div_example_is_not_a_call() -> None:
+    raw = (
+        "<div><div>example</div>"
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call></div>'
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_backtick_inside_an_html_attribute_is_not_a_code_span() -> None:
+    raw = (
+        'Link <a title="`">link</a>\n'
+        '`<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_unterminated_div_in_a_fence_keeps_the_real_call() -> None:
+    raw = '```\n<div>\n```\n\n<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_html_tag_inside_a_call_argument_keeps_the_next_call() -> None:
+    raw = (
+        '<tool_call>{"name": "save", "arguments": {"text": "<div>"}}</tool_call>\n\n'
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["save", "get_weather"]

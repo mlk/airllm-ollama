@@ -8,6 +8,7 @@ transcript instead.
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -255,27 +256,23 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-_PROBE_TOOL = ToolDefinition(
-    function=ToolFunction(
-        name="qxprobetool",
-        description="Synthetic probe to detect templates that ignore the tools.",
-        parameters={"type": "object", "properties": {}},
-    )
-)
-
-
-def _mark_tool_messages(messages: Sequence[ChatTurn]) -> tuple[list[ChatTurn], list[str]]:
+def _mark_tool_messages(
+    messages: Sequence[ChatTurn], seed: str
+) -> tuple[list[ChatTurn], list[str]]:
     """Insert sentinel markers into the tool messages and call arguments.
 
-    The markers are unique, harmless strings no tool name or argument value
-    collides with, so a template that drops any of them can be detected by
-    looking for them in its output.
+    The markers are random per render and are unlikely to collide with any
+    content the user supplied, so a template that drops any of them can be
+    detected by looking for them in its output. Every tool message is
+    marked, including ones with empty content — a template that ignores the
+    tool role must not pass verification just because there was nothing to
+    interpolate.
     """
     marked: list[ChatTurn] = []
     markers: list[str] = []
     for index, message in enumerate(messages):
-        if message.role == "tool" and message.content.strip():
-            marker = f"qxsentinel{index}q"
+        if message.role == "tool":
+            marker = f"qx{seed}{index}q"
             marked.append(
                 ChatTurn(
                     "tool", f"{marker} {message.content}", message.tool_calls, message.tool_name
@@ -286,8 +283,8 @@ def _mark_tool_messages(messages: Sequence[ChatTurn]) -> tuple[list[ChatTurn], l
         if message.tool_calls:
             calls = []
             for ordinal, call in enumerate(message.tool_calls):
-                marker = f"qxsentinel{index}x{ordinal}q"
-                arguments = {**call.function.arguments, "qxsentinel": marker}
+                marker = f"qx{seed}{index}x{ordinal}q"
+                arguments = {**call.function.arguments, f"qx{seed}": marker}
                 calls.append(
                     ToolCall(
                         function=ToolCallFunction(
@@ -299,7 +296,7 @@ def _mark_tool_messages(messages: Sequence[ChatTurn]) -> tuple[list[ChatTurn], l
                 markers.append(marker)
             content = message.content
             if content.strip():
-                marker = f"qxsentinel{index}t"
+                marker = f"qx{seed}{index}t"
                 content = f"{content} {marker}"
                 markers.append(marker)
             marked.append(ChatTurn(message.role, content, tuple(calls), message.tool_name))
@@ -325,17 +322,29 @@ def _verified(
     detected here and falls back to the transcript.
     """
     if tools:
-        probe_tools: list[ToolDefinition] | None = [*tools, _PROBE_TOOL]
+        probe = f"qxprobe{secrets.token_hex(4)}"
+        probe_tools: list[ToolDefinition] | None = [
+            *tools,
+            ToolDefinition(
+                function=ToolFunction(
+                    name=probe,
+                    description="Synthetic probe to detect templates that ignore tools.",
+                    parameters={"type": "object", "properties": {}},
+                )
+            ),
+        ]
     else:
+        probe = None
         probe_tools = None
-    marked, markers = _mark_tool_messages(candidate)
+    seed = secrets.token_hex(6)
+    marked, markers = _mark_tool_messages(candidate, seed)
     if probe_tools is None and not markers:
         return True
     rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
     squashed = _squash(rendered)
-    if probe_tools is not None and _PROBE_TOOL.function.name not in squashed:
+    if probe is not None and probe not in squashed:
         return False
     return all(marker in squashed for marker in markers)
 
