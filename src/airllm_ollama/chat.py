@@ -130,10 +130,15 @@ def _template_supports_tool_calls(raw: object, tool_use_selected: bool) -> bool:
         return True
     if isinstance(raw, dict):
         # A dict of named templates (e.g. Llama 3.1): transformers selects
-        # ``tool_use`` when tools are passed and ``default`` otherwise.
-        key = "tool_use" if tool_use_selected else "default"
-        candidate = raw.get(key, next(iter(raw.values()), ""))
-        return "tool_calls" in str(candidate)
+        # ``tool_use`` when tools are passed, falls back to ``default`` and
+        # only then to the first entry.
+        if tool_use_selected and "tool_use" in raw:
+            selected = raw["tool_use"]
+        elif "default" in raw:
+            selected = raw["default"]
+        else:
+            selected = next(iter(raw.values()), "")
+        return "tool_calls" in str(selected)
     return "tool_calls" in str(raw)
 
 

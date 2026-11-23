@@ -590,3 +590,48 @@ def test_an_assistant_message_with_text_and_tool_calls_keeps_its_content() -> No
 
     assistant = tokenizer.renderings[0][0]
     assert assistant["content"].startswith("Checking.\n<tool_call>")
+
+
+def test_a_named_template_dictionary_prefers_the_default_branch() -> None:
+    """A tool_use entry is passed over when tools are offered."""
+
+    class NamedTemplateTokenizer(DictTemplateTokenizer):
+        """A dict template with an unrelated entry before default."""
+
+        def __init__(self) -> None:
+            """Initialise with a default that reads tool_calls."""
+            super().__init__()
+            self.chat_template = {
+                "aardvark": "{{ message.content }}",
+                "default": "{{ message.tool_calls }}",
+                "tool_use": "{{ message.tool_calls }}",
+            }
+
+    tokenizer = NamedTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[0][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_a_dict_template_without_tool_use_falls_back_to_default() -> None:
+    """Without a tool_use branch, the default branch is the tool-aware one."""
+
+    class NoToolUseTokenizer(DictTemplateTokenizer):
+        """A dict template with no tool_use entry at all."""
+
+        def __init__(self) -> None:
+            """Initialise with a content-only entry before the default."""
+            super().__init__()
+            self.chat_template = {
+                "aardvark": "{{ message.content }}",
+                "default": "{{ message.tool_calls }}",
+            }
+
+    tokenizer = NoToolUseTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[0][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"

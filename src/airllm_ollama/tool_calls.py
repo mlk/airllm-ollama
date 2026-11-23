@@ -18,12 +18,35 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 
 _OPEN = "<tool_call>"
 _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
+_FENCE = re.compile(r"```[^\n]*\n.*?(?:```|\Z)", re.DOTALL)
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+def _code_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the Markdown code fences and inline code spans.
+
+    Markup the model writes as an example ("use it like
+    `<tool_call>...</tool_call>`") is not a tool call, so the code spans are
+    excluded from the scan.
+    """
+    regions = [(match.start(), match.end()) for match in _FENCE.finditer(text)]
+    regions.extend(
+        (match.start(), match.end())
+        for match in _INLINE_CODE.finditer(text)
+        if not any(start <= match.start() < end for start, end in regions)
+    )
+    return regions
+
+
+def _in_regions(position: int, regions: list[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in regions)
 
 
 def _reject_constant(value: str) -> None:
@@ -55,6 +78,7 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         holds no valid tool call, it is returned unchanged.
     """
     decoder = _strict_decoder()
+    code = _code_regions(text)
     calls: list[ToolCall] = []
     spans: list[tuple[int, int]] = []
     position = 0
@@ -62,6 +86,10 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         start = text.find(_OPEN, position)
         if start == -1:
             break
+        if _in_regions(start, code):
+            # An example inside a code span or a fenced block, not a call.
+            position = start + len(_OPEN)
+            continue
         found = _parse_call(text, start + len(_OPEN), decoder)
         if found is None:
             # Not a valid call: the whole block is dead text. Skipping to the
@@ -89,23 +117,37 @@ def _skip_block(text: str, start: int) -> int:
     """Return the offset after the block that opens at ``start``.
 
     Counts nested ``<tool_call>`` markers, so a malformed block is skipped as
-    a unit; an unterminated block extends to the end of the text.
+    a unit. Markers inside JSON strings (with backslash escapes) do not
+    count. An unterminated block extends to the end of the text.
     """
     depth = 0
     position = start
-    while position <= len(text):
-        opener = text.find(_OPEN, position)
-        closer = text.find(_CLOSE, position)
-        if closer == -1:
-            return len(text)
-        if opener != -1 and opener < closer:
-            depth += 1
-            position = opener + len(_OPEN)
+    in_string = False
+    while position < len(text):
+        char = text[position]
+        if in_string:
+            if char == "\\":
+                position += 2
+                continue
+            if char == '"':
+                in_string = False
+            position += 1
             continue
-        depth -= 1
-        position = closer + len(_CLOSE)
-        if depth == 0:
-            return position
+        if char == '"':
+            in_string = True
+            position += 1
+            continue
+        if text.startswith(_OPEN, position):
+            depth += 1
+            position += len(_OPEN)
+            continue
+        if text.startswith(_CLOSE, position):
+            depth -= 1
+            position += len(_CLOSE)
+            if depth == 0:
+                return position
+            continue
+        position += 1
     return len(text)
 
 
@@ -129,7 +171,7 @@ def _parse_call(
     start = _skip_whitespace(text, opening_end)
     try:
         data, end = decoder.raw_decode(text, start)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     call = _to_tool_call(data)
     if call is None:
@@ -151,17 +193,20 @@ def _has_unpaired_surrogate(value: object) -> bool:
 
     The JSON decoder combines well-formed surrogate escape pairs, so a code
     unit in the surrogate range means an unpaired surrogate — the value
-    cannot be serialized by a UTF-8 response.
+    cannot be serialized by a UTF-8 response. The walk is iterative, so an
+    arbitrarily deep nesting does not overflow the stack.
     """
-    if isinstance(value, str):
-        return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
-    if isinstance(value, dict):
-        return any(
-            _has_unpaired_surrogate(key) or _has_unpaired_surrogate(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, list):
-        return any(_has_unpaired_surrogate(item) for item in value)
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            if any(0xD800 <= ord(char) <= 0xDFFF for char in current):
+                return True
+        elif isinstance(current, dict):
+            stack.extend(current.keys())
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
     return False
 
 
@@ -180,7 +225,7 @@ def _to_tool_call(data: object) -> ToolCall | None:
         # object.
         try:
             arguments = _strict_decoder().decode(arguments)
-        except ValueError:
+        except (ValueError, RecursionError):
             return None
         # The escaped string may decode to lone surrogates; the check on the
         # outer object does not see them.

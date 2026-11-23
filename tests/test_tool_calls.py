@@ -246,3 +246,74 @@ def test_a_surrogate_pair_in_a_json_encoded_arguments_string_is_accepted() -> No
 
     assert text == ""
     assert calls[0].function.arguments == {"text": "😀"}
+
+
+def test_an_inline_code_example_is_not_a_call() -> None:
+    raw = 'Example: `<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>` — use it.'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_fenced_code_example_is_not_a_call() -> None:
+    raw = '```json\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n```'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_unterminated_fence_swallows_the_example() -> None:
+    raw = '```\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_call_after_a_code_example_is_still_parsed() -> None:
+    raw = (
+        'Like `<tool_call>{"name": "example"}</tool_call>`. '
+        '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_marker_inside_a_json_string_inside_a_malformed_block_is_not_a_call() -> None:
+    raw = (
+        '<tool_call>{"arguments":{"x":"</tool_call>"},'
+        '"bad":<tool_call>{"name":"delete_file"}</tool_call>}</tool_call>'
+        ' <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_deeply_nested_argument_is_rejected_without_crashing() -> None:
+    depth = 4000
+    arguments = '{"a":' * depth + "1" + "}" * depth
+    raw = '<tool_call>{"name": "f", "arguments": ' + arguments + "}</tool_call>"
+
+    text, calls = extract_tool_calls(raw)
+
+    assert calls == []
+    assert text == raw
+
+
+def test_a_deeply_nested_valid_call_is_accepted() -> None:
+    depth = 100
+    arguments = '{"a":' * depth + "1" + "}" * depth
+    raw = '<tool_call>{"name": "f", "arguments": ' + arguments + "}</tool_call>"
+
+    _, calls = extract_tool_calls(raw)
+
+    assert len(calls) == 1
