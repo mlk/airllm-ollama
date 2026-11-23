@@ -325,8 +325,17 @@ def _mark_argument_values(
     """
     markers: list[str] = []
 
-    def mark(current: object) -> object:
+    def mark(current: object, key: str | None) -> object:
         if isinstance(current, bool) or current is None:
+            # Booleans and null cannot carry a sentinel; require that their
+            # key survives in the output instead.
+            if key is not None:
+                markers.append(key)
+            return current
+        if isinstance(current, (dict, list)) and not current:
+            # Empty containers have nothing to mark; require their key.
+            if key is not None:
+                markers.append(key)
             return current
         if isinstance(current, str):
             marker = f"qxarg{seed}{index}{ordinal}{len(markers)}"
@@ -337,12 +346,12 @@ def _mark_argument_values(
             markers.append(marker)
             return int(marker)
         if isinstance(current, dict):
-            return {key: mark(item) for key, item in current.items()}
+            return {key: mark(item, str(key)) for key, item in current.items()}
         if isinstance(current, list):
-            return [mark(item) for item in current]
+            return [mark(item, None) for item in current]
         return current
 
-    return mark(value), markers
+    return mark(value, None), markers
 
 
 def _verified(
@@ -354,19 +363,22 @@ def _verified(
 ) -> bool:
     """Check that the template really renders tools and tool exchanges.
 
-    The candidate is rendered once more with the first offered tool
-    re-probed (renamed and described with a sentinel, so a template that
-    ignores the tool list is caught), with each call's function name
-    replaced by a sentinel, and with sentinel markers injected into the
-    tool messages and the first string of the call arguments. The call
-    arguments are otherwise left untouched, so the marked call stays valid
-    for templates that validate arguments against the schema. The sentinels
-    are unambiguous markers that survive every tool argument serialization
-    (JSON, dict literal, ``<parameter>`` blocks), so a template that drops
-    the offered tools or a part of the tool history is detected here and
-    falls back to the transcript. A sentinel appended to the system message
-    catches templates that silently drop it (e.g. one that renders the
-    system prompt only for a trailing user turn).
+    The candidate is rendered once more with every offered tool re-probed
+    (renamed and described with a sentinel, and its first parameter renamed
+    as well, so a template that ignores the tool list or the schemas is
+    caught), with each call's function name replaced by a sentinel, and
+    with sentinel markers injected into the tool messages and every value of
+    the call arguments (strings get a suffix, numbers a unique replacement;
+    booleans and null cannot carry a marker, so their keys are required to
+    appear). The structure of the arguments is otherwise left untouched, so
+    the marked call stays valid for templates that validate the arguments
+    against the schema. The sentinels are unambiguous markers that survive
+    every tool argument serialization (JSON, dict literal, ``<parameter>``
+    blocks), so a template that drops the offered tools or a part of the
+    tool history is detected here and falls back to the transcript. A
+    sentinel appended to the system message catches templates that silently
+    drop it (e.g. one that renders the system prompt only for a trailing
+    user turn).
     """
     candidate = list(candidate)
     system_probe = None
@@ -381,23 +393,46 @@ def _verified(
             )
             break
     probe_tools: list[ToolDefinition] | None = None
-    tool_probe = None
-    description_probe = None
+    tool_markers: list[str] = []
     if tools:
-        first = tools[0]
-        tool_probe = f"qxtool{secrets.token_hex(4)}"
-        description_probe = f"qxdesc{secrets.token_hex(4)}"
-        first_function = first.function
-        probe_tools = [
-            ToolDefinition(
-                function=ToolFunction(
-                    name=tool_probe,
-                    description=(f"{first_function.description} {description_probe}").strip(),
-                    parameters=first_function.parameters,
+        # Every offered tool is probed: it is renamed to a sentinel, its
+        # description gets one too, and its first parameter is renamed the
+        # same way. A template that renders only part of the tool list or
+        # only the names (no schema) is detected here.
+        probe_tools = []
+        for index, tool in enumerate(tools):
+            function = tool.function
+            name_marker = f"qxtool{secrets.token_hex(4)}{index}"
+            description_marker = f"qxdesc{secrets.token_hex(4)}{index}"
+            parameters = function.parameters
+            parameter_marker: str | None = None
+            if isinstance(parameters, dict):
+                properties = parameters.get("properties")
+                if isinstance(properties, dict) and properties:
+                    first_key = next(iter(properties))
+                    parameter_marker = f"qxparam{secrets.token_hex(4)}{index}"
+                    properties = dict(properties)
+                    properties[parameter_marker] = properties.pop(first_key)
+                    parameters = dict(parameters)
+                    parameters["properties"] = properties
+                    required = parameters.get("required")
+                    if isinstance(required, list):
+                        parameters["required"] = [
+                            parameter_marker if item == first_key else item for item in required
+                        ]
+            tool_markers.append(name_marker)
+            tool_markers.append(description_marker)
+            if parameter_marker is not None:
+                tool_markers.append(parameter_marker)
+            probe_tools.append(
+                ToolDefinition(
+                    function=ToolFunction(
+                        name=name_marker,
+                        description=f"{function.description} {description_marker}".strip(),
+                        parameters=parameters,
+                    )
                 )
-            ),
-            *tools[1:],
-        ]
+            )
     seed = secrets.token_hex(6)
     marked, markers = _mark_tool_messages(candidate, seed)
     if probe_tools is None and not markers and system_probe is None:
@@ -408,11 +443,7 @@ def _verified(
     squashed = _squash(rendered).lower()
     if system_probe is not None and system_probe.lower() not in squashed:
         return False
-    if (
-        tool_probe is not None
-        and description_probe is not None
-        and (tool_probe.lower() not in squashed or description_probe.lower() not in squashed)
-    ):
+    if any(marker.lower() not in squashed for marker in tool_markers):
         return False
     return all(marker.lower() in squashed for marker in markers)
 

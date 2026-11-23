@@ -869,3 +869,33 @@ def test_many_unterminated_tags_do_not_hang() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_stray_closing_paren_is_not_a_link() -> None:
+    raw = 'Syntax ]( example: `<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_an_unquoted_attribute_with_slashes_terminates() -> None:
+    raw = (
+        "Example: <a href=https://example.com>link</a> "
+        '`<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_link_destination_with_nested_parentheses_masks_the_backtick() -> None:
+    raw = (
+        "[link](https://example.com/a_(b)/`) "
+        '`<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []

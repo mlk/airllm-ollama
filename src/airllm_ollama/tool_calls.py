@@ -132,6 +132,9 @@ def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
             if char == "/" and pos + 1 < length and text[pos + 1] == ">":
                 end = pos + 2
                 break
+            if char == "/":
+                pos += 1
+                continue
             if char in "\"'":
                 closed = text.find(char, pos + 1)
                 if closed == -1:
@@ -144,7 +147,7 @@ def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
             # Anything else is part of the tag (an attribute name, an
             # equals sign, or a bare value): consume until the next
             # delimiter. One character at a time, never backtracking.
-            while pos < length and text[pos] not in " \t\r\n>/\"'":
+            while pos < length and text[pos] not in " \t\r\n>\"'":
                 pos += 1
         yield start, end, closing, name
         position = end
@@ -285,7 +288,22 @@ def _link_destination_spans(text: str) -> list[tuple[int, int]]:
     """
     regions: list[tuple[int, int]] = []
     for match in re.finditer(r"\]\(", text):
-        start = match.start() + 2
+        # Walk back to the matching "[" for the label; a ")(" without a
+        # label is not a link. Labels may nest brackets one level deep.
+        depth = 0
+        label_start = -1
+        for i in range(match.start(), max(-1, match.start() - 4096) - 1, -1):
+            char = text[i]
+            if char == "]":
+                depth += 1
+            elif char == "[":
+                depth -= 1
+                if depth == 0:
+                    label_start = i
+                    break
+        if label_start == -1:
+            continue
+        start = match.end()
         depth = 1
         pos = start
         in_quotes = False

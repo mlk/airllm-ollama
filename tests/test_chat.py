@@ -1284,3 +1284,95 @@ def test_parallel_results_are_reordered_for_content_only_templates() -> None:
 
     tool_messages = [m for m in tokenizer.renderings[-1] if m["role"] == "tool"]
     assert [m["tool_name"] for m in tool_messages] == ["get_weather", "get_time"]
+
+
+def test_a_template_rendering_only_the_first_of_two_tools_falls_back() -> None:
+    """Every offered tool must survive the probe, not just the first."""
+
+    class FirstOnlyTokenizer:
+        """Tokenizer that renders only the first offered tool."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the first offered tool and the message contents."""
+            tools = kwargs.get("tools") or []
+            first = json.dumps(tools[0]) if tools else ""
+            parts = [first]
+            parts += [
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            ]
+            return "\n".join(parts)
+
+    second = ToolDefinition(
+        function=ToolFunction(
+            name="get_time",
+            description="Get the current time.",
+            parameters={"type": "object", "properties": {"zone": {"type": "string"}}},
+        )
+    )
+    messages = [ChatTurn("user", "Weather and time?")]
+
+    rendered = render_chat(FirstOnlyTokenizer(), messages, [*TOOLS, second])
+
+    # Verification fails (the second tool is never rendered), so the
+    # transcript fallback is used instead of the template's output.
+    assert rendered.text.startswith("Tools: ")
+
+
+def test_a_template_rendering_all_offered_tools_is_kept() -> None:
+    """A template that renders both tools verifies fine."""
+
+    class EchoToolsTokenizer:
+        """Tokenizer that echoes every offered tool."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render all offered tools and the message contents."""
+            tools = kwargs.get("tools") or []
+            parts = [json.dumps(tools)]
+            parts += [
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            ]
+            return "\n".join(parts)
+
+    second = ToolDefinition(
+        function=ToolFunction(
+            name="get_time",
+            description="Get the current time.",
+            parameters={"type": "object", "properties": {"zone": {"type": "string"}}},
+        )
+    )
+    messages = [ChatTurn("user", "Weather and time?")]
+
+    rendered = render_chat(EchoToolsTokenizer(), messages, [*TOOLS, second])
+
+    assert "Weather and time?" in rendered.text
+
+
+def test_a_template_rendering_arguments_with_only_booleans_falls_back() -> None:
+    """A template that drops the boolean argument fails verification."""
+
+    class NameOnlyTokenizer:
+        """Tokenizer that renders the call name but no arguments at all."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render only the call names."""
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Turn it on"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="set_power", arguments={"enabled": True})),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_power"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    assert "Tool[set_power]: done" in rendered.text
