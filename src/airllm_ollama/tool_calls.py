@@ -12,8 +12,9 @@ ordinary string in it, so a plain text scan is enough — no constrained
 decoding is needed. The blocks that do not hold a valid call are left in the
 text untouched: a call the model garbled is not silently dropped, and the
 client sees the same text the model produced. Markdown is not a call: code
-regions (fenced and indented code blocks, inline code spans) are skipped, so
-an example the model writes is never mistaken for a call.
+regions (fenced and indented code blocks, inline code spans), HTML blocks
+and the model's reasoning (``<think>...</think>``) are skipped, so an
+example the model writes is never mistaken for a call.
 """
 
 from __future__ import annotations
@@ -32,50 +33,131 @@ _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
 
-def _code_regions(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the code regions of the text.
+def _line_starts(text: str) -> list[int]:
+    """Return the offset at which each line starts (all line-ending styles)."""
+    starts = [0]
+    for match in re.finditer(r"\r\n|[\r\n]", text):
+        starts.append(match.end())
+    starts.append(len(text))
+    return starts
 
-    Fenced and indented code blocks and inline code spans are examples the
-    model wrote for the user — never calls. Markdown decides what counts:
-    blockquotes, headings, list items and nested fences all follow the same
-    rules as a rendered document.
-    """
+
+def _markdown_regions(text: str) -> list[tuple[int, int]]:
+    """Return the code and HTML block spans of the text, per CommonMark."""
     try:
         tokens = _MARKDOWN.parse(text)
     except Exception:
-        # An unparseable document: nothing is treated as code.
-        return []
-    line_starts = [0]
-    for index, char in enumerate(text):
-        if char == "\n":
-            line_starts.append(index + 1)
-    line_starts.append(len(text))
+        # An unparseable document: treat it as opaque, nothing is a call.
+        return [(0, len(text))]
+    line_starts = _line_starts(text)
     regions: list[tuple[int, int]] = []
     for token in tokens:
         if token.map is not None and token.type in ("fence", "code_block", "html_block"):
             regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
+    return regions
+
+
+def _think_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the reasoning blocks (``<think>...</think>``).
+
+    The reasoning of the model is not its answer: nothing inside it is a
+    call. An unterminated block swallows the rest of the text (fail closed).
+    """
+    regions: list[tuple[int, int]] = []
+    lowered = text.lower()
+    cursor = 0
+    while True:
+        start = lowered.find("<think>", cursor)
+        if start == -1:
+            break
+        end = lowered.find("</think>", start)
+        if end == -1:
+            regions.append((start, len(text)))
+            return regions
+        end += len("</think>")
+        regions.append((start, end))
+        cursor = end
+    return regions
+
+
+def _merge_regions(regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(regions):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _run_length(text: str, start: int, char: str) -> int:
+    end = start
+    while end < len(text) and text[end] == char:
+        end += 1
+    return end - start
+
+
+def _find_backtick_run(text: str, run: int, start: int) -> int:
+    """Return the offset of a run of exactly ``run`` backticks, or ``-1``."""
+    position = start
+    needle = "`" * run
+    while True:
+        found = text.find(needle, position)
+        if found == -1:
+            return -1
+        before = text[found - 1] if found > 0 else ""
+        after = text[found + run] if found + run < len(text) else ""
+        if before != "`" and after != "`":
+            return found
+        position = found + run
+
+
+def _inline_code_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the inline code spans.
+
+    CommonMark: a span opens with a run of backticks and closes at a run of
+    exactly the same length, anywhere in the text (a code span may contain
+    line breaks). Spans do not open inside a block region.
+    """
+    regions: list[tuple[int, int]] = []
+    blocked_index = 0
+    position = 0
+    while position < len(text):
+        while blocked_index < len(blocked) and blocked[blocked_index][1] <= position:
+            blocked_index += 1
+        if blocked_index < len(blocked) and blocked[blocked_index][0] <= position:
+            position = blocked[blocked_index][1]
             continue
-        if token.type != "inline" or token.map is None or not token.children:
+        char = text[position]
+        if char == "\\":
+            # An escaped character is never the start of a code span.
+            position += 2
             continue
-        position = line_starts[token.map[0]]
-        for child in token.children:
-            if not child.content:
+        if char == "`":
+            run = _run_length(text, position, "`")
+            closing = _find_backtick_run(text, run, position + run)
+            if closing != -1:
+                regions.append((position, closing + run))
+                position = closing + run
                 continue
-            # The parser normalizes the whitespace inside the content (a
-            # newline inside an inline code span becomes a space), so the
-            # source is matched with flexible whitespace.
-            pattern = re.compile(re.escape(child.content).replace(r"\ ", r"\s+"))
-            match = pattern.search(text, position)
-            if match is None:
-                # Cannot locate the token in the source; stop tracking this
-                # inline block rather than guess positions.
-                position = line_starts[min(token.map[1], len(line_starts) - 1)]
-                break
-            start, end = match.start(), match.end()
-            if child.type == "code_inline":
-                regions.append((start, end))
-            position = end
-    return sorted(regions)
+            position += run
+            continue
+        position += 1
+    return regions
+
+
+def _code_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the code regions of the text.
+
+    Fenced and indented code blocks, HTML blocks, reasoning blocks and
+    inline code spans are not calls — an example the model writes for the
+    user is never executed. Markdown decides what counts as a code region:
+    blockquotes, headings, list items and nested fences all follow the same
+    rules as a rendered document.
+    """
+    blocks = _merge_regions(_markdown_regions(text) + _think_regions(text))
+    inline = _inline_code_regions(text, blocks)
+    return _merge_regions(blocks + inline)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:

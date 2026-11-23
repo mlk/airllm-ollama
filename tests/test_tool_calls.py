@@ -456,3 +456,51 @@ def test_an_indented_code_block_inside_a_blockquote_is_not_a_call() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_an_entity_before_an_inline_code_span_does_not_expose_the_call() -> None:
+    raw = 'Fish &amp; chips: `<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_call_after_a_think_block_is_parsed() -> None:
+    raw = (
+        "<think>Need the weather for the user.</think>\n"
+        '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_call_inside_a_think_block_is_not_executed() -> None:
+    raw = (
+        '<think>Maybe <tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+        "</think>\nDone."
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_bare_carriage_returns_do_not_break_the_scanner() -> None:
+    raw = 'Hi\r\r<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_crlf_fence_is_recognized() -> None:
+    raw = '```\r\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\r\n```\r\n'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []

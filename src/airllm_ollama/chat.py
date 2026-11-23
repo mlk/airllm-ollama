@@ -8,7 +8,7 @@ transcript instead.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -269,27 +269,43 @@ def _keeps_tool_messages(rendered: str, messages: Sequence[ChatTurn]) -> bool:
             if index == -1:
                 return False
             position = index + len(name)
-            arguments = call.function.arguments
-            # Templates print the arguments as JSON (tojson), as a Python
-            # dict literal (raw print) or sorted — accept any of them, at or
-            # after the position of the name.
-            variants = {
-                _squash(json.dumps(arguments, ensure_ascii=False)),
-                _squash(json.dumps(arguments, ensure_ascii=False, sort_keys=True)),
-                _squash(str(arguments)),
-            }
-            index = _find_any(squashed, variants, position)
-            if index == -1:
+            end = _arguments_end(squashed, call.function.arguments, position)
+            if end is None:
                 return False
-            position = index + 1
+            position = end
     return True
 
 
-def _find_any(squashed: str, candidates: set[str], start: int) -> int:
-    """Return the earliest position at or after ``start`` of any candidate."""
-    positions = [squashed.find(candidate, start) for candidate in candidates]
-    found = [position for position in positions if position != -1]
-    return min(found) if found else -1
+def _arguments_end(squashed: str, arguments: Mapping[str, object], start: int) -> int | None:
+    """Locate the arguments of a call in the rendered prompt.
+
+    Templates print the arguments in different ways — JSON (``tojson``), a
+    Python dict literal (raw print), a ``<parameter=name>`` block per
+    argument (Qwen3-Coder) — so several encodings are tried. Returns the
+    offset after the match, or ``None`` when they are absent.
+    """
+    variants = [
+        json.dumps(arguments, ensure_ascii=False),
+        json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+        str(arguments),
+        str(dict(sorted(arguments.items()))),
+        *(f"<parameter={key}>\n{value}\n</parameter>" for key, value in arguments.items()),
+    ]
+    for variant in variants:
+        index = squashed.find(_squash(variant), start)
+        if index != -1:
+            return index + len(_squash(variant))
+    values = [_squash(str(value)) for value in arguments.values() if _squash(str(value))]
+    if not values:
+        # No argument carries text to probe for (e.g. an empty object).
+        return start
+    position = start
+    for value in values:
+        index = squashed.find(value, position)
+        if index == -1:
+            return None
+        position = index + len(value)
+    return position
 
 
 def _squash(text: str) -> str:

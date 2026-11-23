@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from airllm_ollama.chat import ChatTurn, render_chat, render_completion, render_transcript
@@ -662,3 +663,71 @@ def test_a_template_that_drops_tool_messages_falls_back_to_the_transcript() -> N
     rendered = render_chat(tokenizer, TOOL_MESSAGES)
 
     assert "Tool[get_weather]: 22°C" in rendered.text
+
+
+class ParameterTemplateTokenizer:
+    """Tokenizer double mimicking the Qwen3-Coder parameter blocks."""
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.rendered: list[list[dict[str, Any]]] = []
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render parameter blocks per argument and keep tool results."""
+        self.rendered.append(list(messages))
+        parts = []
+        for message in messages:
+            if message["role"] == "tool":
+                parts.append(f"<tool_response>{message['content']}</tool_response>")
+                continue
+            if message.get("tool_calls"):
+                body = "".join(
+                    f"<parameter={key}>\n{value}\n</parameter>"
+                    for call in message["tool_calls"]
+                    for key, value in call["function"]["arguments"].items()
+                )
+                parts.append(
+                    f"<tool_call>{message['tool_calls'][0]['function']['name']}</tool_call>{body}"
+                )
+                continue
+            parts.append(str(message["content"]))
+        return "|".join(parts)
+
+
+def test_a_parameter_block_template_keeps_its_own_format() -> None:
+    tokenizer = ParameterTemplateTokenizer()
+
+    rendered = render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "<tool_response>22°C</tool_response>" in rendered.text
+    assert "<parameter=city>\nParis\n</parameter>" in rendered.text
+
+
+def test_a_tool_result_matching_the_arguments_still_falls_back() -> None:
+    """A result equal to an argument value must not vouch for itself."""
+
+    class EchoTemplate(DictTemplateTokenizer):
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                if message["role"] == "tool":
+                    continue  # drops the tool result, renders the rest
+                if message.get("tool_calls"):
+                    call = message["tool_calls"][0]
+                    parts.append(
+                        f"{call['function']['name']} " + json.dumps(call["function"]["arguments"])
+                    )
+                else:
+                    parts.append(str(message["content"]))
+            return "|".join(parts)
+
+    messages = [
+        TOOL_MESSAGES[0],
+        TOOL_MESSAGES[1],
+        ChatTurn("tool", "Paris", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(EchoTemplate(), messages)
+
+    assert "Tool[get_weather]: Paris" in rendered.text

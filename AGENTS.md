@@ -461,9 +461,10 @@ src/airllm_ollama/
   never silently emptied; templates that drop `tool` messages entirely
   (Zephyr) are detected by probing the rendered prompt for the tool results
   and fall back to the transcript. Markdown examples are not calls: fenced
-  blocks, indented code blocks and inline code spans are skipped, as are
-  examples inside them; the prompt is decoded only up to the generated
-  tokens, so a tool history in the prompt is never re-executed.
+  and indented code blocks, inline code spans and HTML blocks (as parsed by
+  a CommonMark parser) and `<think>` blocks are skipped; the prompt is
+  decoded only up to the generated tokens, so a tool history in the prompt
+  is never re-executed.
 * The parsing happens in the non-streaming path only. Streaming (#103) and
   the OpenAI wire format (`/v1/chat/completions`, #104) are separate tickets.
 * The `tools` capability is opt-in (`AIRLLM_OLLAMA_CAPABILITIES`), like
