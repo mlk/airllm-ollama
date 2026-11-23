@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
-from airllm_ollama.chat import ChatTurn, RenderedPrompt, render_chat, render_completion
+from airllm_ollama.chat import (
+    ChatTurnInput,
+    RenderedPrompt,
+    render_chat,
+    render_completion,
+    to_turn,
+)
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.exceptions import (
     GenerationError,
@@ -28,8 +34,10 @@ from airllm_ollama.exceptions import (
     ModelMismatchError,
 )
 from airllm_ollama.model_metadata import has_own_output_head
+from airllm_ollama.schemas.tools import ToolDefinition
 from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
+from airllm_ollama.tool_calls import prompt_ends_in_think
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,7 @@ class GenerationResult:
     prompt_duration_ns: int = 0
     eval_duration_ns: int = 0
     total_duration_ns: int = 0
+    starts_in_think: bool = False
 
 
 @dataclass(frozen=True)
@@ -506,23 +515,29 @@ class AirLLMEngine:
 
     def generate_chat(
         self,
-        messages: Sequence[ChatTurn],
+        messages: Sequence[ChatTurnInput],
         *,
         model: str | None = None,
         stop: Sequence[str] = (),
+        tools: Sequence[ToolDefinition] | None = None,
         **kwargs: object,
     ) -> GenerationResult:
         """Render a chat history and generate the assistant's answer.
 
         The history is rendered with the chat template of the model; models
-        without a template get a plain transcript.
+        without a template get a plain transcript. The tools of the request
+        are rendered into the prompt as well — the model calls them by
+        emitting a tool call block.
 
         Args:
-            messages: The chat history as ``(role, content)`` pairs.
+            messages: The chat history. Plain ``(role, content)`` pairs are
+                accepted for backwards compatibility and normalized internally.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
                 one of them appears. It is never forwarded to AirLLM.
+            tools: The tools offered to the model, as advertised by its chat
+                template. They are never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -537,7 +552,8 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages)
+            turn_messages = [to_turn(message) for message in messages]
+            rendered = render_chat(loaded_model.tokenizer, turn_messages, tools)
             return self._run_prompt(loaded_model, rendered, started, stop=stop, **kwargs)
 
     def _run_prompt(
@@ -552,7 +568,7 @@ class AirLLMEngine:
         prompt_started = time.perf_counter_ns()
         raw_output, prompt_tokens = self._run(model, prompt, stop, **kwargs)
         prompt_duration = time.perf_counter_ns() - prompt_started
-        text = self._decode(model, raw_output)
+        text = self._decode(model, raw_output, prompt_tokens)
         generated_tokens = self._count_generated_tokens(model, raw_output, prompt_tokens)
         eval_duration = time.perf_counter_ns() - prompt_started
         return GenerationResult(
@@ -563,6 +579,7 @@ class AirLLMEngine:
             prompt_duration_ns=prompt_duration,
             eval_duration_ns=eval_duration,
             total_duration_ns=time.perf_counter_ns() - started,
+            starts_in_think=prompt_ends_in_think(prompt.text),
         )
 
     def generate_stream(
@@ -616,17 +633,19 @@ class AirLLMEngine:
 
     def generate_chat_stream(
         self,
-        messages: Sequence[ChatTurn],
+        messages: Sequence[ChatTurnInput],
         *,
         model: str | None = None,
         stop: Sequence[str] = (),
         abort: threading.Event | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         **kwargs: object,
     ) -> Generator[StreamChunk, None, None]:
         """Render a chat history and stream the assistant's answer.
 
         Args:
-            messages: The chat history as ``(role, content)`` pairs.
+            messages: The chat history. Plain ``(role, content)`` pairs are
+                accepted for backwards compatibility and normalized internally.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
@@ -634,6 +653,8 @@ class AirLLMEngine:
             abort: The event that is set when the client is gone. The
                 generation stops at the next token. It is never forwarded to
                 AirLLM.
+            tools: The tools offered to the model, as advertised by its chat
+                template. They are never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Yields:
@@ -648,7 +669,8 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages)
+            turn_messages = [to_turn(message) for message in messages]
+            rendered = render_chat(loaded_model.tokenizer, turn_messages, tools)
             yield from self._stream(
                 loaded_model, rendered, started, stop=stop, abort=abort, **kwargs
             )
@@ -782,7 +804,7 @@ class AirLLMEngine:
             raise self._generation_error(failure[0]) from failure[0]
 
         raw_output = outcome[0] if outcome else None
-        text = self._decode(model, raw_output) if raw_output is not None else ""
+        text = self._decode(model, raw_output, prompt_tokens) if raw_output is not None else ""
         if not streamed and text:
             # The backend does not support streaming: deliver the whole answer.
             yield StreamChunk(text=text)
@@ -874,11 +896,22 @@ class AirLLMEngine:
         return max(_sequence_length(raw_output) - prompt_tokens, 0)
 
     @staticmethod
-    def _decode(model: AirLLMModelLike, raw_output: object) -> str:
-        """Decode raw generation output into text."""
+    def _decode(model: AirLLMModelLike, raw_output: object, prompt_tokens: int) -> str:
+        """Decode the generated tokens of a raw output.
+
+        The torch backend returns the whole sequence — the prompt included —
+        so the prompt tokens are sliced off before decoding; otherwise the
+        model would see its own prompt (and everything in it, e.g. a tool
+        history) as if it had generated it. The string outputs of the MLX
+        backend already hold only the generated tokens.
+        """
         if isinstance(raw_output, str):
             return raw_output
-        decoded = model.tokenizer.batch_decode(raw_output, skip_special_tokens=True)
+        sequences = _as_nested_list(raw_output)
+        generated = [row[prompt_tokens:] for row in sequences]
+        if not any(generated):
+            return ""
+        decoded = model.tokenizer.batch_decode(generated, skip_special_tokens=True)
         if not decoded:
             return ""
         return decoded[0]

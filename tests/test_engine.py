@@ -19,7 +19,7 @@ from typing import cast
 import pytest
 from pytest_mock import MockerFixture
 
-from airllm_ollama.chat import render_transcript
+from airllm_ollama.chat import ChatTurn, render_transcript
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
@@ -39,6 +39,7 @@ from airllm_ollama.exceptions import (
     ModelInitializationError,
     ModelMismatchError,
 )
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 from airllm_ollama.stopping import StopGeneration
 from fakes import (
     TOKEN_IDS,
@@ -460,7 +461,7 @@ def test_generate_chat_renders_the_history_and_generates() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)
 
-    result = engine.generate_chat([("user", "Hello")])
+    result = engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert factory.model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
     assert result.text == f"decoded:{TOKEN_IDS}"
@@ -479,7 +480,7 @@ def test_generate_chat_uses_the_chat_template() -> None:
     model.tokenizer = TemplateTokenizer()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert model.tokenizer.prompts[0].startswith("templated:")
 
@@ -489,7 +490,7 @@ def test_generate_chat_rejects_a_mismatching_model() -> None:
     engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
 
     with pytest.raises(ModelMismatchError):
-        engine.generate_chat([("user", "Hello")], model="other-model")
+        engine.generate_chat([ChatTurn("user", "Hello")], model="other-model")
 
     assert factory.calls == []
 
@@ -609,7 +610,7 @@ def test_a_template_that_refuses_the_system_role_keeps_the_model_format() -> Non
     model.tokenizer.template = "<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("system", "Be terse."), ("user", "Hello")])
+    engine.generate_chat([ChatTurn("system", "Be terse."), ChatTurn("user", "Hello")])
 
     assert model.tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nHello"}]]
     assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
@@ -665,7 +666,7 @@ def test_a_templated_chat_is_tokenized_without_the_special_tokens() -> None:
     model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
@@ -677,9 +678,9 @@ def test_the_transcript_fallback_is_tokenized_with_the_special_tokens() -> None:
     model.tokenizer = BosTokenizer()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
-    assert model.tokenizer.prompts == [render_transcript([("user", "Hello")])]
+    assert model.tokenizer.prompts == [render_transcript([ChatTurn("user", "Hello")])]
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
@@ -692,7 +693,7 @@ def test_a_templated_stream_is_tokenized_without_the_special_tokens() -> None:
     model.chunks = ["blue ", "sky"]
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    list(engine.generate_chat_stream([("user", "Hello")]))
+    list(engine.generate_chat_stream([ChatTurn("user", "Hello")]))
 
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
@@ -730,7 +731,7 @@ def test_generation_result_reports_the_statistics() -> None:
 
     assert result.text == f"decoded:{TOKEN_IDS}"
     assert result.prompt_tokens == len(TOKEN_IDS)
-    assert result.generated_tokens == 0
+    assert result.generated_tokens == len(TOKEN_IDS)
     assert result.total_duration_ns > 0
     assert result.load_duration_ns > 0
 
@@ -1116,3 +1117,52 @@ def test_a_failed_stream_is_reported() -> None:
 
     with pytest.raises(GenerationError):
         list(engine.generate_stream("hello"))
+
+
+def test_generate_chat_accepts_legacy_tuple_messages() -> None:
+    """The (role, content) pairs of before the structured messages keep working."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    engine.generate_chat([("user", "Hello")])
+
+    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+
+
+def test_generate_chat_stream_accepts_legacy_tuple_messages() -> None:
+    """The streaming path normalizes legacy pairs as well."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    list(engine.generate_chat_stream([("user", "Hello")]))
+
+    assert model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
+
+
+def test_generate_chat_decodes_only_the_generated_tokens() -> None:
+    """A tool history in the prompt is not decoded as part of the answer."""
+    model = FakeModel()
+    engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
+
+    result = engine.generate_chat(
+        [
+            ChatTurn("user", "Weather?"),
+            ChatTurn(
+                "assistant",
+                "",
+                tool_calls=(
+                    ToolCall(
+                        function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                    ),
+                ),
+            ),
+            ChatTurn("tool", "22C", tool_name="get_weather"),
+            ChatTurn("user", "And tomorrow?"),
+        ]
+    )
+
+    assert result.text == f"decoded:{TOKEN_IDS}"
+    assert result.prompt_tokens == len(TOKEN_IDS)
+    assert result.generated_tokens == len(TOKEN_IDS)
+    # The decoder saw only the generated tokens, not the prompt with its history.
+    assert model.tokenizer.decoded[-1] == [list(TOKEN_IDS)]

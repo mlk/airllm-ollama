@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field
 
 # The capabilities of the served model. It generates text, and the chat
 # endpoint is a completion — Ollama has no "chat" capability. The others come
-# with the features that are not implemented yet: "tools" (issue #16),
-# "embedding" (issue #64), "decision" (issue #68).
+# with the features that are not implemented yet: "tools" (tool calls, opt in
+# via AIRLLM_OLLAMA_CAPABILITIES), "embedding" (issue #64), "decision"
+# (issue #68).
 CAPABILITIES = ["completion"]
 
 

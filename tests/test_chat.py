@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from airllm_ollama.chat import render_chat, render_completion, render_transcript
+from airllm_ollama.chat import ChatTurn, render_chat, render_completion, render_transcript
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition, ToolFunction
 from fakes import SystemRoleTokenizer
 
 MESSAGES = [
-    ("system", "Be brief."),
-    ("user", "Hello"),
-    ("assistant", "Hi!"),
+    ChatTurn("system", "Be brief."),
+    ChatTurn("user", "Hello"),
+    ChatTurn("assistant", "Hi!"),
 ]
 
 
@@ -21,7 +23,7 @@ def test_render_transcript_flattens_the_history() -> None:
 
 
 def test_render_transcript_of_a_single_message() -> None:
-    assert render_transcript([("user", "Hello")]) == "User: Hello\n\nAssistant:"
+    assert render_transcript([ChatTurn("user", "Hello")]) == "User: Hello\n\nAssistant:"
 
 
 def test_render_transcript_of_an_empty_history() -> None:
@@ -39,13 +41,14 @@ def test_render_chat_uses_the_chat_template() -> None:
         def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
             """Render the messages the way a chat template would."""
             self.rendered = messages
-            return "<|im_start|>assistant\n"
+            contents = "".join(str(message.get("content", "")) for message in messages)
+            return "<|im_start|>assistant\n" + contents
 
     tokenizer = TemplateTokenizer()
 
     rendered = render_chat(tokenizer, MESSAGES)
 
-    assert rendered.text == "<|im_start|>assistant\n"
+    assert rendered.text.endswith("Be brief.HelloHi!")
     assert tokenizer.rendered == [
         {"role": "system", "content": "Be brief."},
         {"role": "user", "content": "Hello"},
@@ -112,7 +115,7 @@ def test_a_template_that_refuses_the_system_role_gets_the_merged_messages() -> N
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    rendered = render_chat(tokenizer, [("system", "Be brief."), ("user", "Hello")])
+    rendered = render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
 
     assert rendered.text == "templated"
     assert rendered.add_special_tokens is False
@@ -126,10 +129,10 @@ def test_the_history_after_the_first_user_turn_is_kept() -> None:
     render_chat(
         tokenizer,
         [
-            ("system", "Be brief."),
-            ("user", "Hello"),
-            ("assistant", "Hi!"),
-            ("user", "Again"),
+            ChatTurn("system", "Be brief."),
+            ChatTurn("user", "Hello"),
+            ChatTurn("assistant", "Hi!"),
+            ChatTurn("user", "Again"),
         ],
     )
 
@@ -147,7 +150,10 @@ def test_every_system_message_is_merged_into_the_first_user_turn() -> None:
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    render_chat(tokenizer, [("user", "Hello"), ("system", "Be brief."), ("user", "Again")])
+    render_chat(
+        tokenizer,
+        [ChatTurn("user", "Hello"), ChatTurn("system", "Be brief."), ChatTurn("user", "Again")],
+    )
 
     assert tokenizer.renderings == [
         [
@@ -162,7 +168,7 @@ def test_an_empty_system_message_is_dropped_by_the_merge() -> None:
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    render_chat(tokenizer, [("system", "   "), ("user", "Hello")])
+    render_chat(tokenizer, [ChatTurn("system", "   "), ChatTurn("user", "Hello")])
 
     assert tokenizer.renderings == [[{"role": "user", "content": "Hello"}]]
 
@@ -175,7 +181,7 @@ def test_a_template_that_refuses_everything_falls_back_to_the_transcript() -> No
             """Reject the messages."""
             raise ValueError("no template for this model")
 
-    messages = [("system", "Be brief."), ("user", "Hello")]
+    messages = [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
 
     rendered = render_chat(BrokenTokenizer(), messages)
 
@@ -200,7 +206,7 @@ def test_a_history_without_a_user_turn_is_not_asked_again() -> None:
 
     tokenizer = BrokenTokenizer()
 
-    render_chat(tokenizer, [("system", "Be brief."), ("assistant", "Hi!")])
+    render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("assistant", "Hi!")])
 
     assert tokenizer.calls == 1
 
@@ -300,3 +306,1350 @@ def test_render_completion_merges_the_system_message_when_the_template_refuses_i
     assert rendered.text == "templated"
     assert rendered.add_special_tokens is False
     assert tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nhello"}]]
+
+
+TOOL_MESSAGES = [
+    ChatTurn("user", "What is the weather in Paris?"),
+    ChatTurn(
+        "assistant",
+        "",
+        tool_calls=(
+            ToolCall(function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})),
+        ),
+    ),
+    ChatTurn("tool", "22°C", tool_name="get_weather"),
+]
+
+TOOLS = [
+    ToolDefinition(
+        function=ToolFunction(
+            name="get_weather",
+            description="Get the weather of a city.",
+            parameters={
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        )
+    )
+]
+
+
+def test_render_transcript_renders_tool_calls_and_tool_results() -> None:
+    rendered = render_transcript(TOOL_MESSAGES)
+
+    assert rendered == (
+        "User: What is the weather in Paris?\n\n"
+        'Assistant: [tool_calls: get_weather({"city": "Paris"})]\n\n'
+        "Tool[get_weather]: 22°C\n\n"
+        "Assistant:"
+    )
+
+
+def test_render_transcript_lists_the_offered_tools() -> None:
+    rendered = render_transcript([ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert rendered.startswith('Tools: [{"type": "function"')
+    assert rendered.endswith("User: Hello\n\nAssistant:")
+
+
+def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert tokenizer.renderings[-1] == [
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                    "id": "call00001",
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "22°C",
+            "tool_name": "get_weather",
+            "name": "get_weather",
+            "tool_call_id": "call00001",
+        },
+    ]
+
+
+def test_the_template_receives_the_offered_tools() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(tokenizer, [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert tokenizer.tools == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather of a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+
+
+def test_a_template_without_the_tools_keyword_still_renders_the_history() -> None:
+    """A template that refuses the tools falls back to the transcript with the tools."""
+
+    class ToolsRefusingTokenizer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            self.calls += 1
+            raise ValueError("unexpected keyword argument 'tools'")
+
+    rendered = render_chat(ToolsRefusingTokenizer(), [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert rendered.text.startswith("Tools: [")
+    assert "User: Hello" in rendered.text
+
+
+class FakeToolTokenizer:
+    """Tokenizer double recording the messages and the tools it was given."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.tools: Any = None
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages the way a chat template would."""
+        self.renderings.append(list(messages))
+        self.tools = kwargs.get("tools")
+        kwargs_tools = kwargs.get("tools") or []
+        echoed = [
+            str(message.get("content", ""))
+            + "".join(
+                str(call["function"]["name"]) + str(call["function"]["arguments"])
+                for call in message.get("tool_calls", [])
+            )
+            for message in messages
+            if isinstance(message, dict)
+        ]
+        echoed.append(json.dumps(kwargs_tools, default=str))
+        return "<​|im_start|>assistant\n" + "\n".join(echoed)
+
+
+class ContentOnlyTokenizer:
+    """Tokenizer whose template renders the content and ignores tool calls."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.chat_template = "{{ message.content }}"
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the content of the messages, like SmolLM3 does."""
+        self.renderings.append(list(messages))
+        return "\n".join(
+            str(message.get("content", ""))
+            + "".join(str(call["function"]["arguments"]) for call in message.get("tool_calls", []))
+            for message in messages
+            if isinstance(message, dict)
+        )
+
+
+def test_a_template_that_ignores_tool_calls_gets_them_inlined() -> None:
+    """A content-only template sees the calls as part of the content."""
+    tokenizer = ContentOnlyTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert "tool_calls" not in assistant
+    assert (
+        '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+        in (assistant["content"])
+    )
+
+
+def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
+    """A tool-aware template gets the structured payload, not the inlined one."""
+
+    class ToolAwareTokenizer(ContentOnlyTokenizer):
+        """Tokenizer whose template references `tool_calls`."""
+
+        def __init__(self) -> None:
+            """Set a template that renders the tool calls."""
+            super().__init__()
+            self.chat_template = "{{ message.tool_calls }}"
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the calls like a template that reads them does."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", ""))
+                + "".join(
+                    str(call["function"]["name"]) + str(call["function"]["arguments"])
+                    for call in message.get("tool_calls", [])
+                )
+                + str(message.get("tool_name", ""))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    tokenizer = ToolAwareTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert assistant["content"] == ""
+
+
+def test_the_template_receives_an_empty_description_when_none_is_declared() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(
+        tokenizer,
+        [ChatTurn("user", "Hello")],
+        tools=[ToolDefinition(function=ToolFunction(name="get_weather"))],
+    )
+
+    assert tokenizer.tools[0]["function"]["description"] == ""
+
+
+class DictTemplateTokenizer:
+    """Tokenizer double with a dict of named templates (Llama 3.1 style)."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.chat_template = {
+            "default": "{{ message.content }}",
+            "tool_use": "{{ message.tool_calls }}",
+        }
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages, like a named-template tokenizer would."""
+        self.renderings.append(list(messages))
+        branch = "tool_use" if kwargs.get("tools") else "default"
+        return (
+            f"{branch}:"
+            + json.dumps(kwargs.get("tools") or [], default=str)
+            + "|"
+            + json.dumps(messages, default=str)
+        )
+
+
+def test_a_dict_template_without_tools_selects_the_default_branch() -> None:
+    """The default branch renders content only, so the calls are inlined."""
+    tokenizer = DictTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert "tool_calls" not in assistant
+    assert "<tool_call>" in assistant["content"]
+
+
+def test_a_dict_template_with_tools_selects_the_tool_use_branch() -> None:
+    """The tool_use branch renders the calls, so they stay structured."""
+    tokenizer = DictTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert assistant["content"] == ""
+
+
+class R1StyleTokenizer:
+    """Tokenizer double mimicking the DeepSeek-R1 template.
+
+    The R1 template renders an assistant turn's tool calls only when the
+    content is null, and skips the turn otherwise — an empty string content
+    silently drops the calls.
+    """
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.chat_template = (
+            "{% if message['content'] is none %}{{ message.tool_calls }}{% endif %}"
+        )
+        self.rendered = ""
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages the way the R1 template does."""
+        parts = []
+        if kwargs.get("tools"):
+            parts.append(json.dumps(kwargs["tools"], default=str))
+        for message in messages:
+            if message["role"] == "assistant":
+                if message["content"] is None:
+                    for call in message.get("tool_calls", []):
+                        name = call["function"]["name"]
+                        arguments = json.dumps(call["function"]["arguments"])
+                        parts.append(f"<tool_call>{name}{arguments}</tool_call>")
+                else:
+                    parts.append(str(message["content"]))
+            else:
+                parts.append(str(message["content"]))
+        self.rendered = "|".join(parts)
+        return self.rendered
+
+
+def test_a_template_that_requires_null_content_renders_the_tool_calls() -> None:
+    """The history is not silently emptied for content-is-none templates."""
+    tokenizer = R1StyleTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "<tool_call>get_weather" in tokenizer.rendered
+
+
+def test_an_assistant_message_with_text_and_tool_calls_keeps_its_content() -> None:
+    tokenizer = ContentOnlyTokenizer()
+    messages = [
+        ChatTurn(
+            "assistant",
+            "Checking.",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    assistant = tokenizer.renderings[-1][0]
+    assert assistant["content"].startswith("Checking.\n<tool_call>")
+
+
+def test_a_named_template_dictionary_prefers_the_default_branch() -> None:
+    """A tool_use entry is passed over when tools are offered."""
+
+    class NamedTemplateTokenizer(DictTemplateTokenizer):
+        """A dict template with an unrelated entry before default."""
+
+        def __init__(self) -> None:
+            """Initialise with a default that reads tool_calls."""
+            super().__init__()
+            self.chat_template = {
+                "aardvark": "{{ message.content }}",
+                "default": "{{ message.tool_calls }}",
+                "tool_use": "{{ message.tool_calls }}",
+            }
+
+    tokenizer = NamedTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_a_dict_template_without_tool_use_falls_back_to_default() -> None:
+    """Without a tool_use branch, the default branch is the tool-aware one."""
+
+    class NoToolUseTokenizer(DictTemplateTokenizer):
+        """A dict template with no tool_use entry at all."""
+
+        def __init__(self) -> None:
+            """Initialise with a content-only entry before the default."""
+            super().__init__()
+            self.chat_template = {
+                "aardvark": "{{ message.content }}",
+                "default": "{{ message.tool_calls }}",
+            }
+
+    tokenizer = NoToolUseTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[-1][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+class ToolBlindTokenizer:
+    """Tokenizer double mimicking templates that render only system/user/assistant.
+
+    Zephyr's template renders those three roles and silently ignores the
+    tool role, so the tool result never reaches the model.
+    """
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.rendered: list[list[dict[str, Any]]] = []
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render everything except tool messages."""
+        self.rendered.append(list(messages))
+        return "|".join(
+            str(message["content"]) for message in messages if message["role"] != "tool"
+        )
+
+
+def test_a_template_that_drops_tool_messages_falls_back_to_the_transcript() -> None:
+    tokenizer = ToolBlindTokenizer()
+
+    rendered = render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "Tool[get_weather]: 22°C" in rendered.text
+
+
+class ParameterTemplateTokenizer:
+    """Tokenizer double mimicking the Qwen3-Coder parameter blocks."""
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.rendered: list[list[dict[str, Any]]] = []
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render parameter blocks per argument and keep tool results."""
+        self.rendered.append(list(messages))
+        parts = []
+        for message in messages:
+            if message["role"] == "tool":
+                parts.append(f"<tool_response>{message['content']}</tool_response>")
+                continue
+            if message.get("tool_calls"):
+                body = "".join(
+                    f"<parameter={key}>\n{value}\n</parameter>"
+                    for call in message["tool_calls"]
+                    for key, value in call["function"]["arguments"].items()
+                )
+                parts.append(
+                    f"<tool_call>{message['tool_calls'][0]['function']['name']}</tool_call>{body}"
+                )
+                continue
+            parts.append(str(message["content"]))
+        return "|".join(parts)
+
+
+def test_a_parameter_block_template_keeps_its_own_format() -> None:
+    tokenizer = ParameterTemplateTokenizer()
+
+    rendered = render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "<tool_response>22°C</tool_response>" in rendered.text
+    assert "<parameter=city>\nParis\n</parameter>" in rendered.text
+
+
+def test_a_tool_result_matching_the_arguments_still_falls_back() -> None:
+    """A result equal to an argument value must not vouch for itself."""
+
+    class EchoTemplate(DictTemplateTokenizer):
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                if message["role"] == "tool":
+                    continue  # drops the tool result, renders the rest
+                if message.get("tool_calls"):
+                    call = message["tool_calls"][0]
+                    parts.append(
+                        f"{call['function']['name']} " + json.dumps(call["function"]["arguments"])
+                    )
+                else:
+                    parts.append(str(message["content"]))
+            return "|".join(parts)
+
+    messages = [
+        TOOL_MESSAGES[0],
+        TOOL_MESSAGES[1],
+        ChatTurn("tool", "Paris", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(EchoTemplate(), messages)
+
+    assert "Tool[get_weather]: Paris" in rendered.text
+
+
+def test_a_template_that_ignores_the_offered_tools_falls_back_to_the_transcript() -> None:
+    class IgnoringTemplateTokenizer:
+        """Render the messages but not the tools."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the messages, ignoring the tools keyword."""
+            self.renderings.append(list(messages))
+            return "<|im_start|>assistant\n"
+
+    rendered = render_chat(IgnoringTemplateTokenizer(), [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert "Tools: [" in rendered.text
+    assert "get_weather" in rendered.text
+
+
+def test_a_template_that_concatenates_string_arguments_is_supported() -> None:
+    """Templates like DeepSeek-R1 that stringify tool arguments keep their format."""
+
+    class StringArgumentsTokenizer:
+        """Tokenizer double that concatenates arguments into the output."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render, requiring arguments to be a string."""
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    arguments = call["function"]["arguments"]
+                    if not isinstance(arguments, str):
+                        raise TypeError("arguments must be a string")
+                    parts.append(f"<call>{call['function']['name']}:{arguments}</call>")
+            return "|".join(parts) or "empty"
+
+    messages = [
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    rendered = render_chat(StringArgumentsTokenizer(), messages, TOOLS)
+
+    assert "get_weather" in rendered.text
+    assert '{"city": "Paris"}' in rendered.text
+
+
+class MistralTokenizer:
+    """Tokenizer double enforcing the Mistral v0.3 tool-call constraints.
+
+    The real template raises unless every tool call carries a nine
+    alphanumeric character ``id`` and every tool result a matching
+    ``tool_call_id`` of the same shape.
+    """
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages, raising without valid identifiers."""
+        parts: list[str] = ["<s>"]
+        for message in messages:
+            if message["role"] == "user":
+                parts.append(f"[INST] {message['content']} [/INST]")
+                continue
+            tool_calls = message.get("tool_calls")
+            if tool_calls:
+                parts.append("[TOOL_CALLS] [")
+                for index, call in enumerate(tool_calls):
+                    call_id = call.get("id")
+                    if not isinstance(call_id, str) or len(call_id) != 9 or not call_id.isalnum():
+                        raise ValueError("tool call id must be 9 alphanumeric characters")
+                    arguments = json.dumps(call["function"]["arguments"])
+                    parts.append(
+                        f'{{"name": "{call["function"]["name"]}", '
+                        f'"arguments": {arguments}, "id": "{call_id}"}}'
+                    )
+                    if index != len(tool_calls) - 1:
+                        parts.append(", ")
+                parts.append("]")
+                continue
+            if message["role"] == "tool":
+                call_id = message.get("tool_call_id")
+                if not isinstance(call_id, str) or len(call_id) != 9 or not call_id.isalnum():
+                    raise ValueError("tool call id must be 9 alphanumeric characters")
+                parts.append(f'[TOOL_RESULTS] {{"content": {message["content"]}, ')
+                parts.append(f'"call_id": "{call_id}"}}[/TOOL_RESULTS]')
+        return "".join(parts)
+
+
+def test_a_mistral_style_template_with_identifiers_renders_the_history() -> None:
+    """Synthetic ids satisfy the Mistral v0.3 tool-call constraints."""
+    tokenizer = MistralTokenizer()
+    messages = TOOL_MESSAGES
+
+    rendered = render_chat(tokenizer, messages)
+
+    assert "[TOOL_CALLS]" in rendered.text
+    assert '"call_id": "call00001"' in rendered.text
+    assert "call00001" in rendered.text
+
+
+def test_a_glm_style_template_gets_an_empty_string_not_null() -> None:
+    """A template interpolating content directly must not see the literal `None`."""
+
+    class GLMTokenizer:
+        """Tokenizer double mimicking GLM-4.7's direct interpolation."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.rendered: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render each message by interpolating its content directly."""
+            self.rendered.append(list(messages))
+            parts = []
+            for message in messages:
+                parts.append(f"[{message['content']}]")
+                for call in message.get("tool_calls", []):
+                    import json as _json
+
+                    arguments = _json.dumps(call["function"]["arguments"])
+                    parts.append(f"<call>{call['function']['name']}{arguments}</call>")
+            return "".join(parts)
+
+    messages = [
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    rendered = render_chat(GLMTokenizer(), messages)
+
+    assert "None" not in rendered.text
+    assert '<call>get_weather{"city": "Paris"}</call>' in rendered.text
+    assert " qxsentinel" not in rendered.text
+
+
+def test_a_template_dropping_assistant_content_falls_back() -> None:
+    """A template that renders tool_calls but not the content falls back."""
+
+    class ContentBlindTokenizer:
+        """Tokenizer double rendering tool_calls but ignoring content."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.rendered: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render only the tool calls of each message."""
+            self.rendered.append(list(messages))
+            return "|".join(
+                f"<call>{call['function']['name']}</call>"
+                for message in messages
+                for call in message.get("tool_calls", [])
+            )
+
+    rendered = render_chat(ContentBlindTokenizer(), TOOL_MESSAGES)
+
+    assert rendered.text.startswith("User:")
+    assert "Tool[get_weather]: 22°C" in rendered.text
+
+
+def test_an_empty_tool_result_is_still_visible_to_the_probe() -> None:
+    """A Zephyr-style template that drops the tool role must be detected."""
+
+    class ToolBlindTokenizer:
+        """Tokenizer double that renders only non-tool messages."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render everything except tool messages."""
+            self.renderings.append(list(messages))
+            return "|".join(
+                str(message["content"])
+                for message in messages
+                if isinstance(message, dict) and message.get("role") != "tool"
+            )
+
+    messages = [
+        ChatTurn("user", "Weather?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(ToolBlindTokenizer(), messages, TOOLS)
+
+    assert "Tool[get_weather]:" in rendered.text
+
+
+def test_a_template_that_ignores_tools_falls_back_even_if_the_user_names_the_tool() -> None:
+    class NameEchoTokenizer:
+        """Render the messages and the user's mention without offering tools."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Echo the messages, silently dropping the tools keyword."""
+            self.renderings.append(list(messages))
+            return "|".join(
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            )
+
+    messages = [ChatTurn("user", "Please call get_weather for Paris")]
+
+    rendered = render_chat(NameEchoTokenizer(), messages, TOOLS)
+
+    assert "Tools: [" in rendered.text
+
+
+def test_a_template_that_silently_drops_the_system_message_gets_the_merged_messages() -> None:
+    """A template that skips the system message fails verification."""
+
+    class SystemBlindTokenizer:
+        """Tokenizer whose template never renders the system role."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render every message except the system one."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", ""))
+                for message in messages
+                if isinstance(message, dict) and message.get("role") != "system"
+            )
+
+    tokenizer = SystemBlindTokenizer()
+
+    render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
+
+    assert tokenizer.renderings[-1] == [{"role": "user", "content": "Be brief.\n\nHello"}]
+
+
+def test_a_template_that_drops_the_system_message_even_merged_falls_back() -> None:
+    """A template that never renders the history falls back to the transcript."""
+
+    class EmptyTokenizer:
+        """Tokenizer whose template renders nothing usable."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render an empty answer."""
+            return ""
+
+    rendered = render_chat(
+        EmptyTokenizer(), [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
+    )
+
+    assert "Be brief." in rendered.text
+    assert "Hello" in rendered.text
+
+
+def test_tool_results_are_reordered_to_match_the_calls() -> None:
+    """Parallel results in arbitrary order are aligned to their calls."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Compare Paris and Berlin"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+                ToolCall(function=ToolCallFunction(name="get_time", arguments={"city": "Berlin"})),
+            ),
+        ),
+        ChatTurn("tool", "18:00", tool_name="get_time"),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["tool_name"] for message in tool_messages] == ["get_weather", "get_time"]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call00001", "call00002"]
+
+
+def test_tool_results_without_a_matching_call_keep_their_order() -> None:
+    """Results that match no call keep their relative order, after the matched ones."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Run the tools"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="alpha", arguments={})),
+                ToolCall(function=ToolCallFunction(name="beta", arguments={})),
+            ),
+        ),
+        ChatTurn("tool", "unmatched one", tool_name="other"),
+        ChatTurn("tool", "beta result", tool_name="beta"),
+        ChatTurn("tool", "unmatched two", tool_name="another"),
+        ChatTurn("tool", "alpha result", tool_name="alpha"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["tool_name"] for message in tool_messages] == [
+        "alpha",
+        "beta",
+        "other",
+        "another",
+    ]
+
+
+def test_tool_results_align_with_calls_when_only_one_is_named() -> None:
+    """An unnamed result takes the slot of its call, the named ones keep order."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Compare the cities"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="alpha", arguments={})),
+                ToolCall(function=ToolCallFunction(name="beta", arguments={})),
+            ),
+        ),
+        ChatTurn("tool", "unnamed alpha result"),
+        ChatTurn("tool", "beta result", tool_name="beta"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["content"] for message in tool_messages] == [
+        "unnamed alpha result",
+        "beta result",
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call00001", "call00002"]
+
+
+def test_a_template_that_transforms_the_system_content_is_accepted() -> None:
+    """A template rendering `content | upper` still sees the system instruction."""
+
+    class UpperTokenizer:
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render every message uppercased, like a Jinja `upper` filter."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", "")).upper()
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    tokenizer = UpperTokenizer()
+
+    rendered = render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
+
+    assert rendered.text == "BE BRIEF.\nHELLO"
+
+
+def test_a_template_that_validates_the_arguments_accepts_the_marked_history() -> None:
+    """The verification render must not break templates with strict schemas."""
+
+    class StrictTokenizer:
+        """Tokenizer that rejects any argument keys outside the schema."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Reject argument keys other than the declared ones."""
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    properties = set(
+                        tools[call["function"]["name"]]["parameters"].get("properties", {})
+                    )
+                    unexpected = set(call["function"]["arguments"]) - properties
+                    if unexpected:
+                        raise ValueError("unexpected arguments")
+            self.renderings.append(list(messages))
+            return "\n".join(
+                [json.dumps(kwargs.get("tools") or [], default=str)]
+                + [
+                    json.dumps(call["function"])
+                    for message in messages
+                    for call in message.get("tool_calls", [])
+                ]
+            )
+
+    tokenizer = StrictTokenizer()
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(tokenizer, messages, TOOLS)
+
+    assert "get_weather" in rendered.text
+
+
+def test_a_template_that_renders_only_some_arguments_falls_back() -> None:
+    """A template dropping int arguments must not pass verification."""
+
+    class NameOnlyTokenizer:
+        """Tokenizer that renders the call name and nothing of the arguments."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Check the values"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="check", arguments={"a": 5, "b": 6})),
+            ),
+        ),
+        ChatTurn("tool", "ok", tool_name="check"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    # The template cannot render the arguments, so verification fails and the
+    # transcript fallback is used (the tool result appears in the text).
+    assert "Tool[check]: ok" in rendered.text
+
+
+def test_parallel_results_are_reordered_for_content_only_templates() -> None:
+    """Calls and results end up aligned even when the template inlines calls."""
+
+    class ContentOnlyToolTokenizer:
+        """Tokenizer whose template renders only message contents."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Inline calls into the content, like SmolLM3."""
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                parts.append(str(message.get("content", "")))
+                for call in message.get("tool_calls", []):
+                    parts.append(
+                        f"<tool_call>{json.dumps(call['function'], sort_keys=True)}</tool_call>"
+                    )
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Compare"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+                ToolCall(function=ToolCallFunction(name="get_time", arguments={"city": "Berlin"})),
+            ),
+        ),
+        ChatTurn("tool", "18:00", tool_name="get_time"),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    tokenizer = ContentOnlyToolTokenizer()
+    render_chat(tokenizer, messages)
+
+    tool_messages = [m for m in tokenizer.renderings[-1] if m["role"] == "tool"]
+    assert [m["tool_name"] for m in tool_messages] == ["get_weather", "get_time"]
+
+
+def test_a_template_rendering_only_the_first_of_two_tools_falls_back() -> None:
+    """Every offered tool must survive the probe, not just the first."""
+
+    class FirstOnlyTokenizer:
+        """Tokenizer that renders only the first offered tool."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the first offered tool and the message contents."""
+            tools = kwargs.get("tools") or []
+            first = json.dumps(tools[0]) if tools else ""
+            parts = [first]
+            parts += [
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            ]
+            return "\n".join(parts)
+
+    second = ToolDefinition(
+        function=ToolFunction(
+            name="get_time",
+            description="Get the current time.",
+            parameters={"type": "object", "properties": {"zone": {"type": "string"}}},
+        )
+    )
+    messages = [ChatTurn("user", "Weather and time?")]
+
+    rendered = render_chat(FirstOnlyTokenizer(), messages, [*TOOLS, second])
+
+    # Verification fails (the second tool is never rendered), so the
+    # transcript fallback is used instead of the template's output.
+    assert rendered.text.startswith("Tools: ")
+
+
+def test_a_template_rendering_all_offered_tools_is_kept() -> None:
+    """A template that renders both tools verifies fine."""
+
+    class EchoToolsTokenizer:
+        """Tokenizer that echoes every offered tool."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render all offered tools and the message contents."""
+            tools = kwargs.get("tools") or []
+            parts = [json.dumps(tools)]
+            parts += [
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            ]
+            return "\n".join(parts)
+
+    second = ToolDefinition(
+        function=ToolFunction(
+            name="get_time",
+            description="Get the current time.",
+            parameters={"type": "object", "properties": {"zone": {"type": "string"}}},
+        )
+    )
+    messages = [ChatTurn("user", "Weather and time?")]
+
+    rendered = render_chat(EchoToolsTokenizer(), messages, [*TOOLS, second])
+
+    assert "Weather and time?" in rendered.text
+
+
+def test_a_template_rendering_arguments_with_only_booleans_falls_back() -> None:
+    """A template that drops the boolean argument fails verification."""
+
+    class NameOnlyTokenizer:
+        """Tokenizer that renders the call name but no arguments at all."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render only the call names."""
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Turn it on"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="set_power", arguments={"enabled": True})),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_power"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    assert "Tool[set_power]: done" in rendered.text
+
+
+def test_a_template_dropping_the_system_line_in_the_merge_falls_back() -> None:
+    """A template that skips the first message must not swallow the system prompt."""
+
+    class OnlyLastTokenizer:
+        """Tokenizer that renders only the last message."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return str(messages[-1].get("content", "")) if messages else ""
+
+    rendered = render_chat(
+        OnlyLastTokenizer(), [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
+    )
+
+    # Verification fails both candidates, so the transcript is used.
+    assert "Be brief." in rendered.text
+    assert "Hello" in rendered.text
+
+
+def test_a_strict_schema_validating_template_is_accepted() -> None:
+    """A template that validates calls against the offered schema passes."""
+
+    class StrictTokenizer:
+        """Tokenizer that validates the calls against the offered tools."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    function = call["function"]
+                    if function["name"] not in tools:
+                        raise ValueError("unknown tool")
+                    properties = set(tools[function["name"]]["parameters"].get("properties", {}))
+                    if not set(call["function"]["arguments"]) <= properties:
+                        raise ValueError("argument outside the schema")
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            self.renderings.append(list(messages))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    tokenizer = StrictTokenizer()
+
+    rendered = render_chat(tokenizer, messages, TOOLS)
+
+    assert "21 degrees" in rendered.text
+    # The final render uses the real tool name, not the probe name.
+    final_calls = [
+        call for message in tokenizer.renderings[-1] for call in message.get("tool_calls", [])
+    ]
+    assert [call["function"]["name"] for call in final_calls] == ["get_weather"]
+
+
+def test_a_template_dropping_boolean_array_arguments_falls_back() -> None:
+    """Boolean values inside arrays cannot be probed by suffix; key markers catch a drop."""
+
+    class NameOnlyTokenizer:
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Set the flags"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="set_flags", arguments={"flags": [True, False]})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_flags"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    assert "Tool[set_flags]: done" in rendered.text
+
+
+def test_escaped_unicode_in_arguments_does_not_break_verification() -> None:
+    """JSON-escaped non-ASCII content must match the sentinels."""
+
+    class EscapeTokenizer:
+        """Tokenizer that renders everything as ASCII-only JSON."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                for call in message.get("tool_calls", []):
+                    parts.append(json.dumps(call["function"]))
+                parts.append(json.dumps(message.get("content", "")))
+                parts.append(json.dumps(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Méteo?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"ville": "Montréal"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrés", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(EscapeTokenizer(), messages, TOOLS)
+
+    assert not rendered.text.startswith("Tools:")
+
+
+def test_an_enum_argument_stays_schema_valid() -> None:
+    """An enum-constrained argument is replaced by another enum member."""
+    enum_tools = [
+        ToolDefinition(
+            function=ToolFunction(
+                name="set_units",
+                description="Set the units.",
+                parameters={
+                    "type": "object",
+                    "properties": {"units": {"type": "string", "enum": ["C", "F"]}},
+                    "required": ["units"],
+                },
+            )
+        )
+    ]
+
+    class EnumStrictTokenizer:
+        """Tokenizer that enforces the enum on every call."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                for call in message.get("tool_calls", []):
+                    function = call["function"]
+                    for arg_name, arg_value in function["arguments"].items():
+                        spec = (
+                            tools[function["name"]]["parameters"]
+                            .get("properties", {})
+                            .get(arg_name, {})
+                        )
+                        enum = spec.get("enum")
+                        assert enum is None or arg_value in enum
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Use Celsius"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="set_units", arguments={"units": "C"})),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_units"),
+    ]
+
+    rendered = render_chat(EnumStrictTokenizer(), messages, enum_tools)
+
+    assert not rendered.text.startswith("Tools:")
+
+
+def test_a_template_rendering_only_the_tools_falls_back_to_the_transcript() -> None:
+    """The tool definitions alone must not satisfy verification."""
+
+    class SchemaOnlyTokenizer:
+        """Tokenizer that renders the offered tools but never the history."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return json.dumps(kwargs.get("tools") or [], default=str)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(SchemaOnlyTokenizer(), messages, TOOLS)
+
+    assert rendered.text.startswith("Tools:")
+
+
+def test_parallel_calls_to_the_same_tool_get_distinct_probe_values() -> None:
+    """Rendering only the first of two same-tool calls must fail verification."""
+
+    class FirstCallOnlyTokenizer:
+        """Tokenizer that renders only the first tool call of an assistant turn."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = kwargs.get("tools") or []
+            parts = [json.dumps(tools, default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                tool_calls = message.get("tool_calls", [])
+                for call in tool_calls[:1]:
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris and Berlin?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(
+                        name="get_weather", arguments={"city": "Paris", "units": "C"}
+                    )
+                ),
+                ToolCall(
+                    function=ToolCallFunction(
+                        name="get_weather", arguments={"city": "Berlin", "units": "C"}
+                    )
+                ),
+            ),
+        ),
+        ChatTurn("tool", "Paris: 21", tool_name="get_weather"),
+        ChatTurn("tool", "Berlin: 18", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(FirstCallOnlyTokenizer(), messages, TOOLS)
+
+    assert rendered.text.startswith("Tools:")

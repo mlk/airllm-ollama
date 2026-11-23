@@ -21,7 +21,14 @@ from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
 from airllm_ollama.stopping import StopGeneration
-from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel, SystemRoleTokenizer
+from fakes import (
+    TOKEN_IDS,
+    BosTokenizer,
+    EchoTokenizer,
+    FakeFactory,
+    FakeModel,
+    SystemRoleTokenizer,
+)
 
 MODEL = "test-model"
 PROMPT = "Why is the sky blue?"
@@ -92,7 +99,7 @@ def test_api_generate_completes_the_prompt(service: TestClient, factory: FakeFac
     assert payload["done"] is True
     assert payload["done_reason"] == "stop"
     assert payload["prompt_eval_count"] == len(TOKEN_IDS)
-    assert payload["eval_count"] == 0
+    assert payload["eval_count"] == len(TOKEN_IDS)
     assert factory.model.tokenizer.prompts == [PROMPT]
 
 
@@ -115,19 +122,19 @@ def test_api_generate_forwards_the_options(service: TestClient, factory: FakeFac
 def test_api_generate_renders_the_system_prompt_with_the_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
-    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
 
     service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
-    assert factory.model.tokenizer.renderings == [
-        [
-            {"role": "system", "content": "Be terse."},
-            {"role": "user", "content": PROMPT},
-        ]
+    assert factory.model.tokenizer.prompts == [
+        "<​|im_start|>assistant\nBe terse.\n" + PROMPT + "\n[]"
+    ]
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": PROMPT},
     ]
 
 
@@ -406,7 +413,7 @@ def test_api_generate_streams_the_answer(service: TestClient, factory: FakeFacto
     assert "".join(event["response"] for event in events[:-1]) == "the sky is blue"
     assert events[0]["done"] is False
     assert events[-1]["done"] is True
-    assert events[-1]["eval_count"] == 0
+    assert events[-1]["eval_count"] == len(TOKEN_IDS)
 
 
 def test_a_stream_gives_the_model_the_abort_event(
@@ -574,7 +581,7 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
     """A streamed generation must not lose the system message."""
-    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
     factory.model.chunks = ["blue ", "sky"]
 
     response = service.post(
@@ -590,12 +597,12 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     assert response.status_code == 200
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert "".join(event["response"] for event in events[:-1]) == "blue sky"
-    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
-    assert factory.model.tokenizer.renderings == [
-        [
-            {"role": "system", "content": "Be terse."},
-            {"role": "user", "content": PROMPT},
-        ]
+    assert factory.model.tokenizer.prompts == [
+        "<​|im_start|>assistant\nBe terse.\n" + PROMPT + "\n[]"
+    ]
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": PROMPT},
     ]
 
 
@@ -658,3 +665,179 @@ def test_the_full_journey_of_an_ollama_client(service: TestClient, factory: Fake
     assert health.json()["model_loaded"] is True
 
     assert len(factory.model.calls) == 2
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather of a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+TOOL_CALL_TEXT = (
+    'Let me check. <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+)
+
+
+def test_api_chat_returns_the_tool_calls_of_the_model(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.output = TOOL_CALL_TEXT
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["content"] == "Let me check."
+    assert payload["message"]["tool_calls"] == [
+        {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+    ]
+
+
+def test_api_chat_offers_the_tools_to_the_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
+
+    service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert factory.model.tokenizer.template_kwargs[-1]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather of a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+
+
+def test_api_chat_renders_a_tool_history_for_the_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+                    ],
+                },
+                {"role": "tool", "content": "22C", "tool_name": "get_weather"},
+            ],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                    "id": "call00001",
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "22C",
+            "tool_name": "get_weather",
+            "name": "get_weather",
+            "tool_call_id": "call00001",
+        },
+    ]
+
+
+class ThinkPrefillTokenizer(EchoTokenizer):
+    """Tokenizer whose chat template ends with an open ``<think>`` tag."""
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+        """Render the echo and prefill the reasoning block, like QwQ does."""
+        return super().apply_chat_template(messages, **kwargs) + "<think>"
+
+
+def test_api_chat_with_think_prefill_does_not_execute_a_call_in_reasoning(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A prompt that opens a think block keeps the call inside it inert."""
+    factory.model.tokenizer = ThinkPrefillTokenizer("<​|im_start|>assistant\n")
+    factory.model.output = (
+        'reasoning <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}'
+        "</tool_call> more reasoning"
+    )
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"].get("tool_calls") is None
+
+
+def test_api_chat_with_think_prefill_executes_a_call_after_the_block(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A call after the prefilled think block closes is executed."""
+    factory.model.tokenizer = ThinkPrefillTokenizer("<​|im_start|>assistant\n")
+    factory.model.output = (
+        '</think>\n<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+    )
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [call["function"]["name"] for call in response.json()["message"]["tool_calls"]] == [
+        "get_weather"
+    ]

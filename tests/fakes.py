@@ -6,9 +6,10 @@ with a ``generate`` method.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable, Iterator
-from typing import cast
+from typing import Any, cast
 
 TOKEN_IDS = [11, 22, 33]
 
@@ -69,7 +70,8 @@ class FakeTokenizer:
         self.tokenizations: list[dict[str, object]] = []
         self.decoded: list[object] = []
         self.template = template
-        self.renderings: list[list[dict[str, str]]] = []
+        self.renderings: list[list[dict[str, object]]] = []
+        self.template_kwargs: list[dict[str, object]] = []
 
     def __call__(self, text: str, **kwargs: object) -> FakeInputs:
         """Return fake token ids for ``text``."""
@@ -93,7 +95,8 @@ class FakeTokenizer:
     def batch_decode(self, sequences: object, **kwargs: object) -> list[str]:
         """Return a deterministic decoding of ``sequences``."""
         self.decoded.append(sequences)
-        return [f"decoded:{sequences}"]
+        rows = sequences if isinstance(sequences, list) else [sequences]
+        return [f"decoded:{list(row) if isinstance(row, list) else row}" for row in rows]
 
     def apply_chat_template(self, messages: object, **kwargs: object) -> str:
         """Render the messages with the chat template of the tokenizer."""
@@ -101,16 +104,51 @@ class FakeTokenizer:
             raise ValueError("this model has no chat template")
         if isinstance(messages, list):
             self.renderings.append(
-                [
-                    {
-                        "role": str(message.get("role", "")),
-                        "content": str(message.get("content", "")),
-                    }
-                    for message in messages
-                    if isinstance(message, dict)
-                ]
+                [dict(message) for message in messages if isinstance(message, dict)]
             )
+        self.template_kwargs.append(dict(kwargs))
         return self.template
+
+
+class EchoTokenizer(FakeTokenizer):
+    """Tokenizer double whose template echoes the messages and the tool names.
+
+    Used when a test needs the template to preserve the tool exchange — a
+    template that stays silent about tool calls or tool results is treated
+    as dropping them.
+    """
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+        """Render the messages by echoing their contents."""
+        if self.template is None:
+            raise ValueError("this model has no chat template")
+        if isinstance(messages, list):
+            self.renderings.append(
+                [dict(message) for message in messages if isinstance(message, dict)]
+            )
+        message_list: list[dict[str, Any]] = [
+            message
+            for message in (messages if isinstance(messages, list) else [])
+            if isinstance(message, dict)
+        ]
+        tools = kwargs.get("tools")
+        tool_list: list[dict[str, Any]] = [
+            tool for tool in (tools if isinstance(tools, list) else []) if isinstance(tool, dict)
+        ]
+        echoed = [
+            str(message.get("content", ""))
+            + "".join(
+                str(call.get("function", {}).get("name", ""))
+                + str(call.get("function", {}).get("arguments", ""))
+                for call in message.get("tool_calls", [])
+                if isinstance(call, dict)
+            )
+            + str(message.get("tool_name", ""))
+            for message in message_list
+        ]
+        echoed.append(json.dumps(tool_list, default=str))
+        self.template_kwargs.append(dict(kwargs))
+        return "<​|im_start|>assistant\n" + "\n".join(echoed)
 
 
 class BosTokenizer(FakeTokenizer):
@@ -162,14 +200,13 @@ class FakeModel:
     """AirLLM model double recording how it was called."""
 
     def __init__(self, output: object = None, chunks: list[str] | None = None) -> None:
-        """Create a model returning ``output`` (token ids by default).
+        """Create a model returning ``output`` (prompt ids + generated ids).
 
-        Args:
-            output: The value the generation returns.
-            chunks: The text pieces the model streams to a streamer, if any.
+        The default output is the prompt tokens followed by fresh tokens,
+        the way a real backend returns the whole sequence.
         """
         self.tokenizer = FakeTokenizer()
-        self.output = list(TOKEN_IDS) if output is None else output
+        self.output = output
         self.chunks = chunks or []
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         self.forwards: list[dict[str, object]] = []
@@ -183,7 +220,16 @@ class FakeModel:
             if put is not None:
                 for chunk in self.chunks:
                     put(chunk)
-        return self.output
+        if self.output is not None:
+            return self.output
+        first = args[0] if args else None
+        if isinstance(first, dict):
+            prompt = list(first.get("input_ids", []))
+        elif isinstance(first, (list, tuple)):
+            prompt = list(first)
+        else:
+            prompt = list(TOKEN_IDS)
+        return [*prompt, *TOKEN_IDS]
 
     def forward(self, *args: object, **kwargs: object) -> object:
         """Record the forward pass and return the canned output."""
