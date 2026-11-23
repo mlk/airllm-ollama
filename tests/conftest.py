@@ -15,6 +15,25 @@ from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.main import create_app
 
 DEFAULT_PARAMETERS = 135_000_000
+ROOT = Path(__file__).parent.parent
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def workflow_paths() -> list[Path]:
+    """Return the workflow files of the repository.
+
+    GitHub Actions loads the workflows of both extensions, so both are read.
+
+    Returns:
+        The workflow files.
+    """
+    return sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+
+
+@pytest.fixture
+def workflows() -> list[Path]:
+    """Return the workflow files of the repository."""
+    return workflow_paths()
 
 
 @pytest.fixture(autouse=True)

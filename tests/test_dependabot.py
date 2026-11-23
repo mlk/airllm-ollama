@@ -69,7 +69,9 @@ def test_the_actions_are_updated_weekly_and_grouped() -> None:
     assert update["groups"]["actions"]["patterns"] == ["*"]
 
 
-def test_the_ecosystem_covers_the_actions_of_the_workflows() -> None:
+def test_the_ecosystem_covers_the_actions_of_the_workflows(
+    workflows: list[Path],
+) -> None:
     """Every action of the workflows is maintained by Dependabot.
 
     The review action of the repository is a third-party one, pinned to a
@@ -83,11 +85,8 @@ def test_the_ecosystem_covers_the_actions_of_the_workflows() -> None:
     assert "allow" not in update
     assert "exclude-patterns" not in update.get("groups", {}).get("actions", {})
 
-    workflows = ROOT / ".github" / "workflows"
     actions = set()
-    # GitHub Actions loads the workflows of both extensions, so both are read.
-    paths = sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
-    for path in paths:
+    for path in workflows:
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip().lstrip("- ").strip()
             if stripped.startswith("uses:"):
