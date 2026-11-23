@@ -91,7 +91,7 @@ def test_the_review_is_run_by_the_ollama_action() -> None:
     assert "draft == false" in str(workflow["jobs"]["review"]["if"])
     assert "head.repo.full_name == github.repository" in str(workflow["jobs"]["review"]["if"])
     # A stuck model call fails in minutes, not in the six hours of the runner.
-    assert workflow["jobs"]["review"]["timeout-minutes"] == "15"
+    assert str(workflow["jobs"]["review"]["timeout-minutes"]) == "15"
 
     steps = _steps(workflow, "review")
     uses = [str(step.get("uses", "")) for step in steps]

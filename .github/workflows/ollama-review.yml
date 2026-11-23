@@ -32,9 +32,10 @@ jobs:
           # The conventions of the repository are read from the base commit, so
           # a pull request cannot inject its own guidance.
           context_files: AGENTS.md,README.md,.github/review-guidelines.md
-          # AGENTS.md and the README are longer than the default of 12000
-          # characters — the review needs the whole of them.
-          context_max_chars: 40000
+          # The cap is per file. AGENTS.md and the README are longer than the
+          # default of 12000 characters, and the review needs the whole of
+          # them.
+          context_max_chars: 60000
           prompt: |
             Review the pull request against the conventions of this repository.
 

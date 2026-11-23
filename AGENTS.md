@@ -35,8 +35,9 @@ milestones (epics):
 5. Do not reformat or restructure unrelated code — keep diffs focused on the ticket.
 6. **Answer the automated review.** Every PR gets a `review` job (an Ollama
    Cloud model, see `.github/review-guidelines.md`). After opening the PR, wait
-   for it to finish (`gh pr checks <pr> --watch`), read the summary comment and
-   the inline comments (`gh pr view <pr> --json comments`) and deal with
+   for it to finish (`gh pr checks <pr> --watch`), read the summary comment
+   (`gh pr view <pr> --json comments`) **and** the inline comments
+   (`gh api repos/mlk/airllm-ollama/pulls/<pr>/comments`) and deal with
    **every** suggestion:
 
    * implement the suggestion (commit on the same branch, push again),

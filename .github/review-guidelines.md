@@ -35,7 +35,7 @@ Every finding is anchored to a line of the diff and answers three questions:
 what is wrong, why it matters, what to do about it.
 
 * **Title** — a short imperative title that names the code element
-  (`engine.load()` does not release the lock on failure`).
+  (`engine.load()` does not release the lock on failure).
 * **Body** — the concern with code-level detail and a concrete fix, with the
   replacement code when there is one. No filler, no praise.
 * **Severity** — the most severe correct one:
@@ -48,6 +48,12 @@ what is wrong, why it matters, what to do about it.
 A finding has to point at something in the diff. A concern about code that the
 diff does not show is a question, not a finding: raise it in the summary as
 "Other observations" and say what would settle it.
+
+**The diff does not show every change of a pull request.** A file that was
+deleted, or that was moved to another path, does not appear in it — only the
+files that are added or modified do. Never conclude from the diff alone that
+something was not removed, renamed or moved: the pull request itself is the
+only proof.
 
 ## The Summary
 
