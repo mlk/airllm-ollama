@@ -337,16 +337,22 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
     """
     fences = _markdown_blocks(text)
     comments = _comment_regions(text, fences)
-    # Well-formed calls are opaque to the region scan: their contents may
-    # contain anything, including markup-looking text.
+    # Calls are scanned once, up front, and are opaque to everything that
+    # follows: their contents (which may look like anything) never produce
+    # regions of their own.
     calls = _call_spans(text, _merge_regions(fences + comments))
     html = _html_regions(text, _merge_regions(fences + comments + calls))
     blocks = _merge_regions(fences + comments + html)
     segments = _segments(text)
-    inline = _inline_spans(text, blocks, segments)
-    calls = _call_spans(text, _merge_regions(blocks + inline))
-    think = _think_regions(text, _merge_regions(blocks + inline + calls))
-    return _merge_regions(blocks + inline + think)
+    # Inline spans pair backticks whose positions are not inside a call
+    # (backticks in call arguments are not code spans); a span that opens
+    # before a call and closes after it still covers it, and the call is
+    # dropped below.
+    inline = _inline_spans(text, _merge_regions(blocks + calls), segments)
+    blocking = _merge_regions(blocks + inline)
+    calls = [call for call in calls if not _intersects(blocking, call[0], call[1])]
+    think = _think_regions(text, _merge_regions(blocking + calls))
+    return _merge_regions(blocking + think)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
