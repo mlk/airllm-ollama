@@ -360,7 +360,9 @@ def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
         {"role": "user", "content": "What is the weather in Paris?"},
         {
             "role": "assistant",
-            "content": "",
+            # R1-style templates render the tool calls only when the content
+            # is *none*; an empty string would render an empty turn.
+            "content": None,
             "tool_calls": [
                 {
                     "type": "function",
@@ -475,7 +477,7 @@ def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
 
     assistant = tokenizer.renderings[0][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert "<tool_call>" not in assistant["content"]
+    assert assistant["content"] is None
 
 
 def test_the_template_receives_an_empty_description_when_none_is_declared() -> None:
@@ -526,4 +528,65 @@ def test_a_dict_template_with_tools_selects_the_tool_use_branch() -> None:
 
     assistant = tokenizer.renderings[0][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
-    assert "<tool_call>" not in assistant["content"]
+    assert assistant["content"] is None
+
+
+class R1StyleTokenizer:
+    """Tokenizer double mimicking the DeepSeek-R1 template.
+
+    The R1 template renders an assistant turn's tool calls only when the
+    content is null, and skips the turn otherwise — an empty string content
+    silently drops the calls.
+    """
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.chat_template = (
+            "{% if message['content'] is none %}{{ message.tool_calls }}{% endif %}"
+        )
+        self.rendered = ""
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages the way the R1 template does."""
+        parts = []
+        for message in messages:
+            if message["role"] == "assistant":
+                if message["content"] is None:
+                    for call in message.get("tool_calls", []):
+                        name = call["function"]["name"]
+                        parts.append(f"<tool_call>{name}</tool_call>")
+                else:
+                    parts.append(str(message["content"]))
+            else:
+                parts.append(str(message["content"]))
+        self.rendered = "|".join(parts)
+        return self.rendered
+
+
+def test_a_template_that_requires_null_content_renders_the_tool_calls() -> None:
+    """The history is not silently emptied for content-is-none templates."""
+    tokenizer = R1StyleTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "<tool_call>get_weather</tool_call>" in tokenizer.rendered
+
+
+def test_an_assistant_message_with_text_and_tool_calls_keeps_its_content() -> None:
+    tokenizer = ContentOnlyTokenizer()
+    messages = [
+        ChatTurn(
+            "assistant",
+            "Checking.",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    assistant = tokenizer.renderings[0][0]
+    assert assistant["content"].startswith("Checking.\n<tool_call>")

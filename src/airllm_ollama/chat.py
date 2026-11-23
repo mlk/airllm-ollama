@@ -294,6 +294,11 @@ def _message_payload(message: ChatTurn, supports_tool_calls: bool = True) -> dic
     if not supports_tool_calls:
         payload["content"] = _inline_tool_calls(message.content, message.tool_calls)
         return payload
+    if not message.content:
+        # The DeepSeek-R1 family renders the tool calls of an assistant
+        # message only when its content is null — an empty string would
+        # render an empty turn and drop the call.
+        payload["content"] = None
     payload["tool_calls"] = [
         {
             "type": "function",

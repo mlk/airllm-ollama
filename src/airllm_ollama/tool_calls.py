@@ -65,10 +65,10 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         found = _parse_call(text, start + len(_OPEN), decoder)
         if found is None:
             # Not a valid call: the whole block is dead text. Skipping to the
-            # next closing marker keeps a nested marker inside the malformed
-            # block from being picked up as a call of its own.
-            closing = text.find(_CLOSE, start)
-            position = len(text) if closing == -1 else closing + len(_CLOSE)
+            # matching closing marker (counting nested blocks) keeps a marker
+            # inside the malformed block from being picked up as a call of
+            # its own, no matter how deep the nesting.
+            position = _skip_block(text, start)
             continue
         call, end = found
         calls.append(call)
@@ -83,6 +83,30 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         last = end
     parts.append(text[last:])
     return "".join(parts).strip(), calls
+
+
+def _skip_block(text: str, start: int) -> int:
+    """Return the offset after the block that opens at ``start``.
+
+    Counts nested ``<tool_call>`` markers, so a malformed block is skipped as
+    a unit; an unterminated block extends to the end of the text.
+    """
+    depth = 0
+    position = start
+    while position <= len(text):
+        opener = text.find(_OPEN, position)
+        closer = text.find(_CLOSE, position)
+        if closer == -1:
+            return len(text)
+        if opener != -1 and opener < closer:
+            depth += 1
+            position = opener + len(_OPEN)
+            continue
+        depth -= 1
+        position = closer + len(_CLOSE)
+        if depth == 0:
+            return position
+    return len(text)
 
 
 def _parse_call(

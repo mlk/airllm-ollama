@@ -762,7 +762,7 @@ def test_api_chat_renders_a_tool_history_for_the_template(
         {"role": "user", "content": "Weather in Paris?"},
         {
             "role": "assistant",
-            "content": "",
+            "content": None,
             "tool_calls": [
                 {
                     "type": "function",
