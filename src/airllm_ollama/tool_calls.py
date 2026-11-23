@@ -11,142 +11,71 @@ The text is decoded from the tokens the model generated; the block is an
 ordinary string in it, so a plain text scan is enough — no constrained
 decoding is needed. The blocks that do not hold a valid call are left in the
 text untouched: a call the model garbled is not silently dropped, and the
-client sees the same text the model produced. Markdown is not a call: fenced
-code blocks and inline code spans are skipped, so an example the model writes
-is never mistaken for a call.
+client sees the same text the model produced. Markdown is not a call: code
+regions (fenced and indented code blocks, inline code spans) are skipped, so
+an example the model writes is never mistaken for a call.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
+
+from markdown_it import MarkdownIt
 
 from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 
 _OPEN = "<tool_call>"
 _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
-_FENCES = ("```", "~~~")
+_MARKDOWN = MarkdownIt("commonmark")
 
 
-def _fence_run(text: str, start: int) -> int:
-    """Return the length of the run of the fence character at ``start``."""
-    char = text[start]
-    return len(text[start:]) - len(text[start:].lstrip(char))
+def _code_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the code regions of the text.
 
-
-def _indented_code_regions(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the indented code blocks of the text.
-
-    A line indented by at least four spaces (or a tab), following a blank
-    line or another code line, is a code block — an example in it is not a
-    tool call. Lines inside a paragraph are not code (CommonMark: an
-    indented line cannot interrupt a paragraph).
+    Fenced and indented code blocks and inline code spans are examples the
+    model wrote for the user — never calls. Markdown decides what counts:
+    blockquotes, headings, list items and nested fences all follow the same
+    rules as a rendered document.
     """
+    try:
+        tokens = _MARKDOWN.parse(text)
+    except Exception:
+        # An unparseable document: nothing is treated as code.
+        return []
+    line_starts = [0]
+    for index, char in enumerate(text):
+        if char == "\n":
+            line_starts.append(index + 1)
+    line_starts.append(len(text))
     regions: list[tuple[int, int]] = []
-    line_start = 0
-    prev_blank = True
-    in_code = False
-    for line in text.splitlines(keepends=True):
-        line_end = line_start + len(line)
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" \t"))
-        indented = indent >= 4 or line.startswith("\t")
-        if not stripped:
-            if in_code and regions:
-                regions[-1] = (regions[-1][0], line_end)
-            else:
-                prev_blank = True
-        elif indented and (prev_blank or in_code):
-            if in_code and regions:
-                regions[-1] = (regions[-1][0], line_end)
-            else:
-                regions.append((line_start, line_end))
-            in_code = True
-            prev_blank = False
-        else:
-            in_code = False
-            prev_blank = False
-        line_start = line_end
-    return regions
-
-
-def _skip_fence(text: str, start: int) -> int:
-    """Return the offset after the fenced code block that opens at ``start``.
-
-    The block ends at the first line that holds only the fence character,
-    at least as many as in the opening fence — or at the end of the text
-    when the fence is not closed.
-    """
-    char = text[start]
-    run = _fence_run(text, start)
-    first_newline = text.find("\n", start)
-    if first_newline == -1:
-        return len(text)
-    position = first_newline + 1
-    while True:
-        eol = text.find("\n", position)
-        line_end = len(text) if eol == -1 else eol
-        line = text[position:line_end]
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip(" \t")
-        # A closing fence may be indented by at most three spaces.
-        if (
-            indent <= 3
-            and not line.startswith("\t")
-            and stripped
-            and set(stripped) == {char}
-            and len(stripped) >= run
-        ):
-            return len(text) if eol == -1 else eol + 1
-        if eol == -1:
-            return len(text)
-        position = eol + 1
-
-
-def _find_backtick_run(text: str, run: int, start: int) -> int:
-    """Return the offset of a run of exactly ``run`` backticks, or ``-1``."""
-    position = start
-    while True:
-        found = text.find("`" * run, position)
-        if found == -1:
-            return -1
-        before = text[found - 1] if found > 0 else ""
-        after = text[found + run] if found + run < len(text) else ""
-        if before != "`" and after != "`":
-            return found
-        position = found + run
-
-
-def _skip_inline_code(text: str, start: int) -> int:
-    """Return the offset after the inline code span that opens at ``start``.
-
-    A span closes at a run of exactly as many backticks as opened it —
-    anywhere, even on a later line (inline code spans may contain line
-    breaks). An unmatched run is skipped over and scanning continues.
-    """
-    run = _fence_run(text, start)
-    closing = _find_backtick_run(text, run, start + run)
-    if closing == -1:
-        return start + run
-    return closing + run
-
-
-def _reject_constant(value: str) -> None:
-    """Reject the non-standard JSON constants (``NaN``, ``Infinity``)."""
-    raise ValueError(f"invalid constant: {value}")
-
-
-def _finite_float(value: str) -> float:
-    """Parse a float, rejecting values outside the finite range."""
-    parsed = float(value)
-    if not math.isfinite(parsed):
-        raise ValueError(f"non-finite number: {value}")
-    return parsed
-
-
-def _strict_decoder() -> json.JSONDecoder:
-    return json.JSONDecoder(parse_constant=_reject_constant, parse_float=_finite_float)
+    for token in tokens:
+        if token.map is not None and token.type in ("fence", "code_block", "html_block"):
+            regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
+            continue
+        if token.type != "inline" or token.map is None or not token.children:
+            continue
+        position = line_starts[token.map[0]]
+        for child in token.children:
+            if not child.content:
+                continue
+            # The parser normalizes the whitespace inside the content (a
+            # newline inside an inline code span becomes a space), so the
+            # source is matched with flexible whitespace.
+            pattern = re.compile(re.escape(child.content).replace(r"\ ", r"\s+"))
+            match = pattern.search(text, position)
+            if match is None:
+                # Cannot locate the token in the source; stop tracking this
+                # inline block rather than guess positions.
+                position = line_starts[min(token.map[1], len(line_starts) - 1)]
+                break
+            start, end = match.start(), match.end()
+            if child.type == "code_inline":
+                regions.append((start, end))
+            position = end
+    return sorted(regions)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
@@ -161,29 +90,18 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
         holds no valid tool call, it is returned unchanged.
     """
     decoder = _strict_decoder()
-    indented = _indented_code_regions(text)
-    indented_index = 0
+    regions = _code_regions(text)
+    region_index = 0
     calls: list[ToolCall] = []
     spans: list[tuple[int, int]] = []
     position = 0
     while position < len(text):
-        while indented_index < len(indented) and indented[indented_index][1] <= position:
-            indented_index += 1
-        if (
-            indented_index < len(indented)
-            and indented[indented_index][0] <= position < indented[indented_index][1]
-        ):
-            # An indented code block: an example in it is not a call.
-            position = indented[indented_index][1]
-            continue
-        if text.startswith(_FENCES, position):
-            # A fenced code block: an example in it is not a call.
-            position = _skip_fence(text, position)
-            continue
-        char = text[position]
-        if char == "`":
-            # An inline code span: an example in it is not a call either.
-            position = _skip_inline_code(text, position)
+        while region_index < len(regions) and regions[region_index][1] <= position:
+            region_index += 1
+        if region_index < len(regions) and regions[region_index][0] <= position:
+            # A code region (fenced or indented block, code span): whatever it
+            # contains is an example, not a call.
+            position = regions[region_index][1]
             continue
         if text.startswith(_OPEN, position):
             found = _parse_call(text, position + len(_OPEN), decoder)
@@ -194,9 +112,9 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
                 position = end
             else:
                 # Not a valid call: the whole block is dead text. Skipping to
-                # the matching closing marker (counting nested blocks) keeps
-                # a marker inside the malformed block from being picked up as
-                # a call of its own, no matter how deep the nesting.
+                # the matching closing marker (counting nested blocks) keeps a
+                # marker inside the malformed block from being picked up as a
+                # call of its own, no matter how deep the nesting.
                 position = _skip_block(text, position)
             continue
         position += 1
@@ -306,6 +224,23 @@ def _has_unpaired_surrogate(value: object) -> bool:
         elif isinstance(current, list):
             stack.extend(current)
     return False
+
+
+def _reject_constant(value: str) -> None:
+    """Reject the non-standard JSON constants (``NaN``, ``Infinity``)."""
+    raise ValueError(f"invalid constant: {value}")
+
+
+def _finite_float(value: str) -> float:
+    """Parse a float, rejecting values outside the finite range."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite number: {value}")
+    return parsed
+
+
+def _strict_decoder() -> json.JSONDecoder:
+    return json.JSONDecoder(parse_constant=_reject_constant, parse_float=_finite_float)
 
 
 def _to_tool_call(data: object) -> ToolCall | None:

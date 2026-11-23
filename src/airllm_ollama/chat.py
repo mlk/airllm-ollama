@@ -245,23 +245,56 @@ def apply_chat_template(
 
 
 def _keeps_tool_messages(rendered: str, messages: Sequence[ChatTurn]) -> bool:
-    """Check that the rendered prompt still holds the tool messages.
+    """Check that the rendered prompt still holds the tool exchanges.
 
     Some templates render only the roles they know and silently drop the
     rest — Zephyr's renders system/user/assistant and nothing else, so a
-    tool result would vanish from the prompt without any error. A call the
-    model made and the answer it got back are probed in the rendered text;
-    if either is missing, the template cannot be trusted with this history.
+    tool result would vanish from the prompt without any error. Every tool
+    result is probed in full and every tool call by name and by arguments;
+    a probe that is missing means the template dropped it. The probes are
+    matched in order, so one part of the history cannot vouch for another.
     """
-    squashed = " ".join(rendered.split())
+    squashed = _squash(rendered)
+    position = 0
     for message in messages:
-        probes = [message.content] if message.role == "tool" else []
-        probes += [call.function.name for call in message.tool_calls]
-        for probe in probes:
-            probe = " ".join(probe.split())[:80]
-            if probe and probe not in squashed:
+        if message.role == "tool" and message.content.strip():
+            probe = _squash(message.content)
+            index = squashed.find(probe, position)
+            if index == -1:
                 return False
+            position = index + len(probe)
+        for call in message.tool_calls:
+            name = call.function.name
+            index = squashed.find(name, position)
+            if index == -1:
+                return False
+            position = index + len(name)
+            arguments = call.function.arguments
+            # Templates print the arguments as JSON (tojson), as a Python
+            # dict literal (raw print) or sorted — accept any of them, at or
+            # after the position of the name.
+            variants = {
+                _squash(json.dumps(arguments, ensure_ascii=False)),
+                _squash(json.dumps(arguments, ensure_ascii=False, sort_keys=True)),
+                _squash(str(arguments)),
+            }
+            index = _find_any(squashed, variants, position)
+            if index == -1:
+                return False
+            position = index + 1
     return True
+
+
+def _find_any(squashed: str, candidates: set[str], start: int) -> int:
+    """Return the earliest position at or after ``start`` of any candidate."""
+    positions = [squashed.find(candidate, start) for candidate in candidates]
+    found = [position for position in positions if position != -1]
+    return min(found) if found else -1
+
+
+def _squash(text: str) -> str:
+    """Collapse all runs of whitespace, so formatting cannot hide a probe."""
+    return " ".join(text.split())
 
 
 def _render_with_template(

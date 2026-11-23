@@ -423,3 +423,36 @@ def test_an_indented_closing_fence_does_not_close_the_fence() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_a_blockquote_fence_is_not_closed_by_an_unquoted_fence() -> None:
+    raw = (
+        "> ```\n"
+        "> sample\n"
+        "```\n"
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+        "~~~\n"
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_indented_code_block_after_a_heading_is_not_a_call() -> None:
+    raw = '# Example\n    <tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_indented_code_block_inside_a_blockquote_is_not_a_call() -> None:
+    raw = '> Example\n>\n>     <tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
