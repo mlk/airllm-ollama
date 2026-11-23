@@ -33,20 +33,25 @@ milestones (epics):
 4. CI must be green before the PR is considered done (`gh pr checks <pr>
    --watch`).
 5. Do not reformat or restructure unrelated code — keep diffs focused on the ticket.
-6. **Answer the automated review.** Every PR gets a `review` job (JetBrains
-   Junie, see `.junie/guidelines.md`). After opening the PR, wait for it to
-   finish (`gh pr checks <pr> --watch`), read the comment
-   (`gh pr view <pr> --json comments`) and deal with **every** suggestion:
+6. **Answer the automated review.** Every PR gets a `review` job (an Ollama
+   Cloud model, see `.github/review-guidelines.md`). After opening the PR, wait
+   for it to finish (`gh pr checks <pr> --watch`), read the summary comment
+   (`gh pr view <pr> --json comments`) **and** the inline comments
+   (`gh api repos/mlk/airllm-ollama/pulls/<pr>/comments`) and deal with
+   **every** suggestion:
 
    * implement the suggestion (commit on the same branch, push again),
-   * ignore it — then say why in a reply to the comment,
+   * ignore it — then say why in the answer,
    * or, when it is valid but out of scope for this ticket, file a new issue
      (`gh issue create`) or extend an existing one and reference that issue in
-     the reply.
+     the answer.
 
    A PR is not done before the reviewer has been answered. Do not leave a
-   suggestion unaddressed and unmentioned. The job posts **one** comment per
-   pull request and updates it on the next run.
+   suggestion unaddressed and unmentioned. The answer goes into a **comment of
+   the pull request**, not into a reply to an inline comment: the action
+   replaces its inline comments and edits its summary on the next run, so a
+   reply to them would be orphaned. Name every finding you answer — by its
+   file and its line — so that the next reader can follow.
 
 ## Tooling
 
@@ -86,6 +91,10 @@ Both run weekly.
   `chore(deps-dev)` and `chore(ci)`.
 * A pull request of Dependabot that updates the manifest **and** the lock file
   is a normal change: never edit `uv.lock` by hand to "fix" it — run `uv lock`.
+* The `github-actions` ecosystem covers **every** action of the workflows, the
+  third-party ones included: the `mlk/ollama-review-action` is pinned to a
+  commit SHA, and Dependabot bumps that pin (and the version comment next to
+  it) when the action is released.
 * The configuration is pinned by `tests/test_dependabot.py`.
 
 ## Quality gates (all enforced in CI)
@@ -139,10 +148,27 @@ Both run weekly.
   checkout needs the tags (`fetch-depth: 0`) and the workflow refuses to
   publish a version that is not a release one (a development version means
   that the checkout is not at the tag).
-* The `review` job (JetBrains Junie) uses the **free** model of the account — the
-  workflow pins no `model`. When the job fails with *"Insufficient account
-  balance"*, the account is out of credits; the quality gates still decide, the
-  review is a second pair of eyes.
+* The `review` job (`.github/workflows/ollama-review.yml`) reviews the pull
+  request with an **Ollama Cloud** model (`glm-5.3`) through the
+  `mlk/ollama-review-action`. It needs the `OLLAMA_API_KEY` secret — an API key
+  from [ollama.com/settings/keys](https://ollama.com/settings/keys). The action
+  posts every finding as an inline comment on the line it belongs to, and the
+  assessment of the pull request as a summary comment.
+* The action reads the diff through the GitHub API and never checks the pull
+  request out, so the workflow has no `actions/checkout` step and it is safe to
+  run on untrusted forks — the `if` condition skips them anyway, because
+  GitHub withholds the secrets of a fork.
+* The pull requests of **Dependabot** are not reviewed either: GitHub runs the
+  workflows of a Dependabot pull request as if it came from a fork, so the job
+  would get a read-only token and no secrets at all. The `if` condition skips
+  `dependabot[bot]`.
+* The conventions of the repository are handed to the model as project
+  context: `AGENTS.md`, the `README.md` and `.github/review-guidelines.md`,
+  all read at the **base** commit, so a pull request cannot inject its own
+  guidance.
+* The action is pinned to a **commit SHA** (a tag can be moved). Dependabot
+  bumps the pin in the weekly `chore(ci)` pull request of the `github-actions`
+  ecosystem — it updates the SHA and the version comment next to it.
 
 ## Architecture
 

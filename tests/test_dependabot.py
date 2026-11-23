@@ -69,6 +69,32 @@ def test_the_actions_are_updated_weekly_and_grouped() -> None:
     assert update["groups"]["actions"]["patterns"] == ["*"]
 
 
+def test_the_ecosystem_covers_the_actions_of_the_workflows(
+    workflows: list[Path],
+) -> None:
+    """Every action of the workflows is maintained by Dependabot.
+
+    The review action of the repository is a third-party one, pinned to a
+    commit SHA. Dependabot bumps that pin, so the action must not be excluded
+    from the ecosystem.
+    """
+    update = _ecosystems(_config())["github-actions"]
+
+    # An `ignore` or an `allow` list would exclude the action just as silently.
+    assert "ignore" not in update
+    assert "allow" not in update
+    assert "exclude-patterns" not in update.get("groups", {}).get("actions", {})
+
+    actions = set()
+    for path in workflows:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip().lstrip("- ").strip()
+            if stripped.startswith("uses:"):
+                actions.add(stripped.removeprefix("uses:").split("@")[0].strip())
+    # The review action is the third-party one — it is the pin that goes stale.
+    assert "mlk/ollama-review-action" in actions
+
+
 def test_the_commit_messages_follow_the_conventions_of_the_repository() -> None:
     """The pull requests of Dependabot use the commit style of the repository."""
     ecosystems = _ecosystems(_config())
