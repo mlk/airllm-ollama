@@ -233,12 +233,35 @@ def apply_chat_template(
         getattr(tokenizer, "chat_template", None), offered is not None
     )
     rendered = _render_with_template(render, messages, offered, supports_tool_calls)
-    if rendered is not None:
+    if rendered is not None and _keeps_tool_messages(rendered, messages):
         return rendered
     merged = _merge_system_message(messages)
     if merged is None:
         return None
-    return _render_with_template(render, merged, offered, supports_tool_calls)
+    rendered = _render_with_template(render, merged, offered, supports_tool_calls)
+    if rendered is not None and _keeps_tool_messages(rendered, merged):
+        return rendered
+    return None
+
+
+def _keeps_tool_messages(rendered: str, messages: Sequence[ChatTurn]) -> bool:
+    """Check that the rendered prompt still holds the tool messages.
+
+    Some templates render only the roles they know and silently drop the
+    rest — Zephyr's renders system/user/assistant and nothing else, so a
+    tool result would vanish from the prompt without any error. A call the
+    model made and the answer it got back are probed in the rendered text;
+    if either is missing, the template cannot be trusted with this history.
+    """
+    squashed = " ".join(rendered.split())
+    for message in messages:
+        probes = [message.content] if message.role == "tool" else []
+        probes += [call.function.name for call in message.tool_calls]
+        for probe in probes:
+            probe = " ".join(probe.split())[:80]
+            if probe and probe not in squashed:
+                return False
+    return True
 
 
 def _render_with_template(

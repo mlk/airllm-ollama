@@ -635,3 +635,30 @@ def test_a_dict_template_without_tool_use_falls_back_to_default() -> None:
 
     assistant = tokenizer.renderings[0][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+class ToolBlindTokenizer:
+    """Tokenizer double mimicking templates that render only system/user/assistant.
+
+    Zephyr's template renders those three roles and silently ignores the
+    tool role, so the tool result never reaches the model.
+    """
+
+    def __init__(self) -> None:
+        """Initialise the recording list."""
+        self.rendered: list[list[dict[str, Any]]] = []
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render everything except tool messages."""
+        self.rendered.append(list(messages))
+        return "|".join(
+            str(message["content"]) for message in messages if message["role"] != "tool"
+        )
+
+
+def test_a_template_that_drops_tool_messages_falls_back_to_the_transcript() -> None:
+    tokenizer = ToolBlindTokenizer()
+
+    rendered = render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert "Tool[get_weather]: 22°C" in rendered.text

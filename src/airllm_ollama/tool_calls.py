@@ -87,8 +87,17 @@ def _skip_fence(text: str, start: int) -> int:
     while True:
         eol = text.find("\n", position)
         line_end = len(text) if eol == -1 else eol
-        stripped = text[position:line_end].strip(" \t")
-        if stripped and set(stripped) == {char} and len(stripped) >= run:
+        line = text[position:line_end]
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip(" \t")
+        # A closing fence may be indented by at most three spaces.
+        if (
+            indent <= 3
+            and not line.startswith("\t")
+            and stripped
+            and set(stripped) == {char}
+            and len(stripped) >= run
+        ):
             return len(text) if eol == -1 else eol + 1
         if eol == -1:
             return len(text)

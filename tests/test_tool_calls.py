@@ -414,3 +414,12 @@ def test_a_call_after_an_indented_code_block_is_still_parsed() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_an_indented_closing_fence_does_not_close_the_fence() -> None:
+    raw = '~~~text\n    ~~~\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n~~~'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
