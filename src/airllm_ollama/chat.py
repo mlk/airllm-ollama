@@ -287,13 +287,11 @@ def _mark_tool_messages(
             calls = []
             for ordinal, call in enumerate(message.tool_calls):
                 name_marker = f"qxname{seed}{index}{ordinal}"
-                argument_marker = f"qxarg{seed}{index}{ordinal}"
-                arguments, marked_argument = _sentinel_in_first_string(
-                    dict(call.function.arguments), argument_marker
+                arguments, argument_markers = _mark_argument_values(
+                    dict(call.function.arguments), seed, index, ordinal
                 )
                 markers.append(name_marker)
-                if marked_argument:
-                    markers.append(argument_marker)
+                markers.extend(argument_markers)
                 calls.append(
                     ToolCall(
                         function=ToolCallFunction(
@@ -313,31 +311,38 @@ def _mark_tool_messages(
     return marked, markers
 
 
-def _sentinel_in_first_string(value: object, sentinel: str) -> tuple[object, bool]:
-    """Append ``sentinel`` to the first string found, depth-first.
+def _mark_argument_values(
+    value: object, seed: str, index: int, ordinal: int
+) -> tuple[object, list[str]]:
+    """Replace every argument value with a marked counterpart.
 
-    Returns the (possibly) updated value and whether a string was found.
-    The structure of the arguments is otherwise left unchanged.
+    Strings get a random sentinel suffix, numbers are replaced with a
+    unique ten-digit marker (so the marker survives any numeric
+    serialization); booleans and null cannot carry a marker and are left
+    alone. The structure of the arguments is otherwise untouched — no keys
+    are added or removed — so the marked call stays valid for templates
+    that check the arguments against the schema.
     """
-    if isinstance(value, str):
-        return value + sentinel, True
-    if isinstance(value, dict):
-        for key, item in value.items():
-            replaced, found = _sentinel_in_first_string(item, sentinel)
-            if found:
-                updated = dict(value)
-                updated[key] = replaced
-                return updated, True
-        return value, False
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            replaced, found = _sentinel_in_first_string(item, sentinel)
-            if found:
-                updated_list = list(value)
-                updated_list[index] = replaced
-                return updated_list, True
-        return value, False
-    return value, False
+    markers: list[str] = []
+
+    def mark(current: object) -> object:
+        if isinstance(current, bool) or current is None:
+            return current
+        if isinstance(current, str):
+            marker = f"qxarg{seed}{index}{ordinal}{len(markers)}"
+            markers.append(marker)
+            return current + marker
+        if isinstance(current, (int, float)):
+            marker = str(10**9 + secrets.randbelow(9 * 10**9))
+            markers.append(marker)
+            return int(marker)
+        if isinstance(current, dict):
+            return {key: mark(item) for key, item in current.items()}
+        if isinstance(current, list):
+            return [mark(item) for item in current]
+        return current
+
+    return mark(value), markers
 
 
 def _verified(
@@ -467,6 +472,7 @@ def _render_with_template(
         The rendered prompt, or ``None`` when the template refuses the
         messages.
     """
+    messages = _order_tool_results(list(messages))
     payload = [_message_payload(message, supports_tool_calls, null_content) for message in messages]
     _assign_call_ids(payload)
     kwargs: dict[str, object] = {"tokenize": False, "add_generation_prompt": True}
@@ -500,7 +506,7 @@ def _render_with_template(
     return rendered
 
 
-def _order_tool_results(payload: list[dict[str, object]]) -> None:
+def _order_tool_results(messages: Sequence[ChatTurn]) -> list[ChatTurn]:
     """Reorder each run of tool results to match the order of the calls.
 
     A client may send the results of a parallel tool call batch in any
@@ -510,43 +516,47 @@ def _order_tool_results(payload: list[dict[str, object]]) -> None:
     pending calls: a result whose ``tool_name`` matches a pending call goes
     in the call's position, the remaining results keep their relative
     order. Calls and results without names keep their client-given order.
+
+    The reordering happens on the messages, before the calls are rendered
+    or inlined, so it applies to every template — including the ones that
+    render the calls inline as text.
     """
-    call_names: list[str] = []
+    out: list[ChatTurn] = []
+    pending: list[str] = []
     index = 0
-    while index < len(payload):
-        message = payload[index]
-        calls = message.get("tool_calls")
-        if isinstance(calls, list) and calls:
-            for call in cast("list[dict[str, Any]]", calls):
-                function = call.get("function")
-                name = function.get("name") if isinstance(function, dict) else ""
-                call_names.append(str(name))
+    while index < len(messages):
+        message = messages[index]
+        if message.tool_calls:
+            pending.extend(call.function.name for call in message.tool_calls)
+            out.append(message)
             index += 1
             continue
-        if message.get("role") != "tool":
+        if message.role != "tool":
+            out.append(message)
             index += 1
             continue
         end = index
-        while end < len(payload) and payload[end].get("role") == "tool":
+        while end < len(messages) and messages[end].role == "tool":
             end += 1
-        run = payload[index:end]
-        pending = list(call_names)
+        run = list(messages[index:end])
+        batch = pending
+        pending = []
         used = [False] * len(run)
-        assigned: list[int | None] = [None] * len(pending)
+        assigned: list[int | None] = [None] * len(batch)
         # First pass: each named call claims its name-matching result.
-        for call_index, name in enumerate(pending):
+        for call_index, name in enumerate(batch):
             if not name:
                 continue
             for index_in_run, item in enumerate(run):
                 if used[index_in_run]:
                     continue
-                if str(item.get("tool_name") or "") == name:
+                if (item.tool_name or "") == name:
                     used[index_in_run] = True
                     assigned[call_index] = index_in_run
                     break
         # Second pass: unmatched calls take the remaining results in order,
         # keeping the run's positions aligned with the calls.
-        for call_index, _name in enumerate(pending):
+        for call_index in range(len(batch)):
             if assigned[call_index] is not None:
                 continue
             for index_in_run in range(len(run)):
@@ -554,17 +564,13 @@ def _order_tool_results(payload: list[dict[str, object]]) -> None:
                     used[index_in_run] = True
                     assigned[call_index] = index_in_run
                     break
-        ordered: list[dict[str, object]] = []
         for assigned_index in assigned:
             if assigned_index is not None:
-                ordered.append(run[assigned_index])
+                out.append(run[assigned_index])
                 used[assigned_index] = True
-        ordered.extend(item for position, item in enumerate(run) if not used[position])
-        payload[index:end] = ordered
-        # The pending calls are consumed by this run: later runs belong
-        # to later batches of calls.
-        call_names.clear()
+        out.extend(item for position, item in enumerate(run) if not used[position])
         index = end
+    return out
 
 
 def _assign_call_ids(payload: list[dict[str, object]]) -> None:
@@ -572,14 +578,13 @@ def _assign_call_ids(payload: list[dict[str, object]]) -> None:
 
     The Mistral family of templates requires every tool call to carry a
     nine-character alphanumeric ``id`` and every tool result a matching
-    ``tool_call_id``. Other templates ignore the keys. The run of tool
-    results is reordered first (see :func:`_order_tool_results`), so the
-    results line up with the calls by position; each tool result then gets
-    the id of the call it answers, matched by ``tool_name`` when the client
-    sends it and by order of appearance otherwise. The ids are
-    deterministic for a given history.
+    ``tool_call_id``. Other templates ignore the keys. The runs of tool
+    results have been reordered to match the calls by then (see
+    :func:`_order_tool_results`); each tool result gets the id of the call
+    it answers, matched by ``tool_name`` when the client sends it and by
+    order of appearance otherwise. The ids are deterministic for a given
+    history.
     """
-    _order_tool_results(payload)
     counter = 0
     pending: list[tuple[str, str]] = []  # (name, id), oldest first
     for message in payload:

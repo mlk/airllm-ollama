@@ -813,3 +813,59 @@ def test_a_call_spanned_by_an_apparent_tag_and_backticks_is_not_executed() -> No
     _, calls = extract_tool_calls(raw)
 
     assert calls == []
+
+
+def test_a_think_delimiter_inside_a_script_does_not_close_the_block() -> None:
+    raw = (
+        '<think><script>const text="</think>";</script> '
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_think_delimiter_inside_a_style_element_does_not_close_the_block() -> None:
+    raw = (
+        '<think><style>.x::after { content: "</think>" }</style> '
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_backtick_inside_a_link_destination_is_not_a_code_span() -> None:
+    raw = '[link](https://example.com/`) `<tool_call>{"name":"delete_file"}</tool_call>`'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_backtick_inside_a_reference_link_definition_is_not_a_code_span() -> None:
+    raw = (
+        '[link][x]\n\n[x]: https://example.com/`\n\n`<tool_call>{"name":"delete_file"}</tool_call>`'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_call_after_a_link_destination_is_executed() -> None:
+    raw = '[link](https://example.com/`) and then <tool_call>{"name":"get_weather"}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_many_unterminated_tags_do_not_hang() -> None:
+    raw = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>' + "<a " * 2000
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]

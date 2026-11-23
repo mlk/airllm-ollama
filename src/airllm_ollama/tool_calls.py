@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Iterator
 
 from markdown_it import MarkdownIt
 
@@ -33,10 +34,8 @@ _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
-# A tag open or close. Tag names cannot contain underscores, so the
-# tool_call and think markers never match; attribute values (quoted with
-# either quote) may contain anything except their own quote.
-_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)(?=[\s/>])((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>")
+# A tag scanner that never backtracks: every position of the text is
+# consumed at most once, no matter how broken the markup is.
 
 # Elements whose content is raw text, up to the matching close tag. An
 # unterminated one swallows the rest of the text, like in HTML.
@@ -87,6 +86,70 @@ def _is_escaped(text: str, position: int) -> bool:
     return slashes % 2 == 1
 
 
+def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
+    r"""Yield ``(start, end, closing, name)`` for every tag in the text.
+
+    A single pass: every position is consumed at most once, so even
+    pathological input (thousands of unterminated ``<a``) stays linear.
+    The first ``>`` outside a quoted attribute value terminates the tag;
+    a tag whose quoted value is never closed runs to the end of the text,
+    the way an HTML parser treats it. Text that cannot be a tag is skipped
+    one character at a time. Tag names never contain ``_``, so the
+    ``<tool_call>`` and ``<think>`` markers are not tags.
+    """
+    length = len(text)
+    position = 0
+    while True:
+        start = text.find("<", position)
+        if start == -1:
+            return
+        index = start + 1
+        closing = index < length and text[index] == "/"
+        if closing:
+            index += 1
+        name_start = index
+        while index < length and (text[index].isalnum() or text[index] == "-"):
+            index += 1
+        if index == name_start:
+            position = start + 1
+            continue
+        name = text[name_start:index].lower()
+        if index < length and text[index] not in " \t\r\n/>":
+            # A name followed by anything else (e.g. "<tool_call>" parsed as
+            # a tag "tool" followed by attribute "_call") is not a tag.
+            position = start + 1
+            continue
+        pos = index
+        end = length
+        while pos < length:
+            char = text[pos]
+            if char == ">":
+                end = pos + 1
+                break
+            if char in " \t\r\n":
+                pos += 1
+                continue
+            if char == "/" and pos + 1 < length and text[pos + 1] == ">":
+                end = pos + 2
+                break
+            if char in "\"'":
+                closed = text.find(char, pos + 1)
+                if closed == -1:
+                    # Unterminated attribute value: the tag runs to the
+                    # end of the text, the way an HTML parser treats it.
+                    pos = length
+                    break
+                pos = closed + 1
+                continue
+            # Anything else is part of the tag (an attribute name, an
+            # equals sign, or a bare value): consume until the next
+            # delimiter. One character at a time, never backtracking.
+            while pos < length and text[pos] not in " \t\r\n>/\"'":
+                pos += 1
+        yield start, end, closing, name
+        position = end
+
+
 _NULL = "\x00"
 
 
@@ -127,20 +190,18 @@ def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, 
     regions: list[tuple[int, int]] = []
     stack: list[tuple[str, int]] = []
     raw_text: tuple[str, int] | None = None
-    for match in _TAG.finditer(text):
-        if _is_blocked(blocked, match.start(), match.end()):
+    for start, end, closing, name in _iter_tags(text):
+        if _is_blocked(blocked, start, end):
             continue
-        if _is_escaped(text, match.start()):
+        if _is_escaped(text, start):
             continue
-        closing, name, _attrs = match.groups()
-        name = name.lower()
         if name == "think":
             # The reasoning block is handled separately by _think_regions;
             # its delimiters are not HTML tags and never pair here.
             continue
         if raw_text is not None:
             if closing and name == raw_text[0]:
-                regions.append((raw_text[1], match.end()))
+                regions.append((raw_text[1], end))
                 raw_text = None
             continue
         if closing:
@@ -148,17 +209,17 @@ def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, 
             # unmatched close is ignored.
             for index in range(len(stack) - 1, -1, -1):
                 if stack[index][0] == name:
-                    start = stack[index][1]
+                    start_of_element = stack[index][1]
                     del stack[index:]
-                    regions.append((start, match.end()))
+                    regions.append((start_of_element, end))
                     break
             continue
         if name in _RAW_TEXT_ELEMENTS:
-            raw_text = (name, match.start())
+            raw_text = (name, start)
             continue
         if name in _VOID_ELEMENTS:
             continue
-        stack.append((name, match.start()))
+        stack.append((name, start))
     if raw_text is not None:
         regions.append((raw_text[1], len(text)))
     for _name, start in stack:
@@ -175,15 +236,83 @@ def _tag_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, i
     region, or are backslash-escaped, are not tags either.
     """
     regions: list[tuple[int, int]] = []
-    for match in _TAG.finditer(text):
-        if _is_blocked(blocked, match.start(), match.end()):
+    for start, end, _closing, name in _iter_tags(text):
+        if _is_blocked(blocked, start, end):
             continue
-        if _is_escaped(text, match.start()):
+        if _is_escaped(text, start):
             continue
-        name = match.group(2).lower()
         if name == "think":
             continue
-        regions.append((match.start(), match.end()))
+        regions.append((start, end))
+    return regions
+
+
+def _raw_text_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the raw-text elements (script, style, ...).
+
+    Their contents are opaque, like in HTML: a reasoning delimiter or a
+    comment inside them is text, not markup. An unterminated raw-text
+    element swallows the rest of the text.
+    """
+    regions: list[tuple[int, int]] = []
+    raw_text: tuple[str, int] | None = None
+    for start, end, closing, name in _iter_tags(text):
+        if _is_blocked(blocked, start, end):
+            continue
+        if _is_escaped(text, start):
+            continue
+        if name not in _RAW_TEXT_ELEMENTS:
+            continue
+        if closing:
+            if raw_text is not None and name == raw_text[0]:
+                regions.append((raw_text[1], end))
+                raw_text = None
+            continue
+        if raw_text is None:
+            raw_text = (name, start)
+    if raw_text is not None:
+        regions.append((raw_text[1], len(text)))
+    return regions
+
+
+def _link_destination_spans(text: str) -> list[tuple[int, int]]:
+    """Return the spans of inline-link destinations and reference labels.
+
+    Backticks inside a link destination are part of the URL, not code
+    delimiters, so the inline-code scan must not pair them. Handles nested
+    parentheses in destinations; quotes and escapes are honoured. Reference
+    definitions (``[label]: destination``) are covered as well.
+    """
+    regions: list[tuple[int, int]] = []
+    for match in re.finditer(r"\]\(", text):
+        start = match.start() + 2
+        depth = 1
+        pos = start
+        in_quotes = False
+        while pos < len(text):
+            char = text[pos]
+            if char == "\\":
+                pos += 2
+                continue
+            if in_quotes:
+                if char == '"':
+                    in_quotes = False
+                pos += 1
+                continue
+            if char == '"':
+                in_quotes = True
+                pos += 1
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            pos += 1
+        regions.append((start, pos))
+    for match in re.finditer(r"^\[[^\]]*\]:\s*(\S+)", text, re.MULTILINE):
+        regions.append((match.start(1), match.end(1)))
     return regions
 
 
@@ -384,11 +513,14 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
     tags = _tag_regions(text, fences)
     calls = _call_spans(text, _merge_regions(fences + tags))
     segments = _segments(masked)
+    links = _link_destination_spans(text)
     # Inline code spans come before comments and HTML blocks: a comment
-    # opener inside a code span is an example, not a comment.
-    inline = _inline_spans(text, _merge_regions(fences + tags + calls), segments)
+    # opener inside a code span is an example, not a comment. Backticks
+    # inside link destinations are part of the URL, not code delimiters.
+    inline = _inline_spans(text, _merge_regions(fences + tags + calls + links), segments)
     comments = _comment_regions(text, _merge_regions(fences + tags + calls + inline))
-    think = _think_regions(text, _merge_regions(fences + tags + calls + inline + comments))
+    raw = _raw_text_regions(text, _merge_regions(fences + comments + calls + inline))
+    think = _think_regions(text, _merge_regions(fences + tags + calls + inline + comments + raw))
     blocks = _merge_regions(fences + comments + think)
     html = _html_regions(text, _merge_regions(blocks + calls + inline))
     # Tag spans stay in the blocking set: a call inside a tag (for instance

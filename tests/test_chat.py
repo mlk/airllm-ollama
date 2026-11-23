@@ -1205,3 +1205,82 @@ def test_a_template_that_validates_the_arguments_accepts_the_marked_history() ->
     rendered = render_chat(tokenizer, messages, TOOLS)
 
     assert "get_weather" in rendered.text
+
+
+def test_a_template_that_renders_only_some_arguments_falls_back() -> None:
+    """A template dropping int arguments must not pass verification."""
+
+    class NameOnlyTokenizer:
+        """Tokenizer that renders the call name and nothing of the arguments."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Check the values"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="check", arguments={"a": 5, "b": 6})),
+            ),
+        ),
+        ChatTurn("tool", "ok", tool_name="check"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    # The template cannot render the arguments, so verification fails and the
+    # transcript fallback is used (the tool result appears in the text).
+    assert "Tool[check]: ok" in rendered.text
+
+
+def test_parallel_results_are_reordered_for_content_only_templates() -> None:
+    """Calls and results end up aligned even when the template inlines calls."""
+
+    class ContentOnlyToolTokenizer:
+        """Tokenizer whose template renders only message contents."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Inline calls into the content, like SmolLM3."""
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                parts.append(str(message.get("content", "")))
+                for call in message.get("tool_calls", []):
+                    parts.append(
+                        f"<tool_call>{json.dumps(call['function'], sort_keys=True)}</tool_call>"
+                    )
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Compare"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+                ToolCall(function=ToolCallFunction(name="get_time", arguments={"city": "Berlin"})),
+            ),
+        ),
+        ChatTurn("tool", "18:00", tool_name="get_time"),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    tokenizer = ContentOnlyToolTokenizer()
+    render_chat(tokenizer, messages)
+
+    tool_messages = [m for m in tokenizer.renderings[-1] if m["role"] == "tool"]
+    assert [m["tool_name"] for m in tool_messages] == ["get_weather", "get_time"]
