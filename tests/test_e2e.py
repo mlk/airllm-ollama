@@ -774,8 +774,15 @@ def test_api_chat_renders_a_tool_history_for_the_template(
                 {
                     "type": "function",
                     "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                    "id": "call00001",
                 }
             ],
         },
-        {"role": "tool", "content": "22C", "tool_name": "get_weather", "name": "get_weather"},
+        {
+            "role": "tool",
+            "content": "22C",
+            "tool_name": "get_weather",
+            "name": "get_weather",
+            "tool_call_id": "call00001",
+        },
     ]

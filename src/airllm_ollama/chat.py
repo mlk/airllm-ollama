@@ -396,6 +396,7 @@ def _render_with_template(
         messages.
     """
     payload = [_message_payload(message, supports_tool_calls, null_content) for message in messages]
+    _assign_call_ids(payload)
     kwargs: dict[str, object] = {"tokenize": False, "add_generation_prompt": True}
     if tools:
         kwargs["tools"] = _tools_payload(tools)
@@ -425,6 +426,28 @@ def _render_with_template(
     if not isinstance(rendered, str) or not rendered.strip():
         return None
     return rendered
+
+
+def _assign_call_ids(payload: list[dict[str, object]]) -> None:
+    """Assign synthetic call ids to the tool calls of an assistant turn.
+
+    The Mistral family of templates requires every tool call to carry a
+    nine-character alphanumeric ``id`` and every tool result a matching
+    ``tool_call_id``. Other templates ignore the keys. The ids are
+    deterministic for a given history.
+    """
+    counter = 0
+    pending: list[str] = []
+    for message in payload:
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            for call in cast("list[dict[str, Any]]", tool_calls):
+                counter += 1
+                call_id = f"call{counter:05d}"[-9:]
+                call["id"] = call_id
+                pending.append(call_id)
+        if message.get("role") == "tool":
+            message["tool_call_id"] = pending.pop(0) if pending else "call00000"
 
 
 def _message_payload(

@@ -366,6 +366,7 @@ def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
                 {
                     "type": "function",
                     "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                    "id": "call00001",
                 },
             ],
         },
@@ -374,6 +375,7 @@ def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
             "content": "22°C",
             "tool_name": "get_weather",
             "name": "get_weather",
+            "tool_call_id": "call00001",
         },
     ]
 
@@ -800,3 +802,130 @@ def test_a_template_that_concatenates_string_arguments_is_supported() -> None:
 
     assert "get_weather" in rendered.text
     assert '{"city": "Paris"}' in rendered.text
+
+
+class MistralTokenizer:
+    """Tokenizer double enforcing the Mistral v0.3 tool-call constraints.
+
+    The real template raises unless every tool call carries a nine
+    alphanumeric character ``id`` and every tool result a matching
+    ``tool_call_id`` of the same shape.
+    """
+
+    TEMPLATE = """
+{% for message in messages %}
+{%- if message["role"] == "user" -%}
+[INST] {{ message["content"] }} [/INST]
+{%- elif message.tool_calls is defined and message.tool_calls is not none -%}
+[TOOL_CALLS] [
+{%- for tool_call in message.tool_calls %}
+{{ tool_call.function | tojson }}
+{%- if not tool_call.id is defined or tool_call.id | length != 9 %}
+{{ raise_exception("tool call id must be 9 alphanumeric characters") }}
+{%- endif %}
+{{ ', "id": "' + tool_call.id + '"}' }}
+{%- if not loop.last %}, {% endif %}
+{%- endfor %}]
+{%- elif message["role"] == "tool" -%}
+[TOOL_RESULTS] {"content": {{ message.content | string }},
+ "call_id": "{{ message.tool_call_id }}"}[/TOOL_RESULTS]
+{%- if not message.tool_call_id is defined or message.tool_call_id | length != 9 %}
+{{ raise_exception("tool call id must be 9 alphanumeric characters") }}
+{% endif %}
+{%- endif %}
+{%- endfor %}
+"""
+
+    def __init__(self) -> None:
+        """Initialise the Jinja environment."""
+        import jinja2
+
+        self.env = jinja2.Environment()
+        self.env.globals["raise_exception"] = self._raise
+
+    @staticmethod
+    def _raise(message: str) -> None:
+        raise ValueError(message)
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages like Mistral's template does."""
+        return self.env.from_string(self.TEMPLATE).render(messages=messages, bos_token="<s>")
+
+
+def test_a_mistral_style_template_with_identifiers_renders_the_history() -> None:
+    """Synthetic ids satisfy the Mistral v0.3 tool-call constraints."""
+    tokenizer = MistralTokenizer()
+    messages = TOOL_MESSAGES
+
+    rendered = render_chat(tokenizer, messages)
+
+    assert "[TOOL_CALLS]" in rendered.text
+    assert '"call_id": "call00001"' in rendered.text
+    assert "call00001" in rendered.text
+
+
+def test_a_glm_style_template_gets_an_empty_string_not_null() -> None:
+    """A template interpolating content directly must not see the literal `None`."""
+
+    class GLMTokenizer:
+        """Tokenizer double mimicking GLM-4.7's direct interpolation."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.rendered: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render each message by interpolating its content directly."""
+            self.rendered.append(list(messages))
+            parts = []
+            for message in messages:
+                parts.append(f"[{message['content']}]")
+                for call in message.get("tool_calls", []):
+                    import json as _json
+
+                    arguments = _json.dumps(call["function"]["arguments"])
+                    parts.append(f"<call>{call['function']['name']}{arguments}</call>")
+            return "".join(parts)
+
+    messages = [
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    rendered = render_chat(GLMTokenizer(), messages)
+
+    assert "None" not in rendered.text
+    assert '<call>get_weather{"city": "Paris"}</call>' in rendered.text
+    assert " qxsentinel" not in rendered.text
+
+
+def test_a_template_dropping_assistant_content_falls_back() -> None:
+    """A template that renders tool_calls but not the content falls back."""
+
+    class ContentBlindTokenizer:
+        """Tokenizer double rendering tool_calls but ignoring content."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.rendered: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render only the tool calls of each message."""
+            self.rendered.append(list(messages))
+            return "|".join(
+                f"<call>{call['function']['name']}</call>"
+                for message in messages
+                for call in message.get("tool_calls", [])
+            )
+
+    rendered = render_chat(ContentBlindTokenizer(), TOOL_MESSAGES)
+
+    assert rendered.text.startswith("User:")
+    assert "Tool[get_weather]: 22°C" in rendered.text

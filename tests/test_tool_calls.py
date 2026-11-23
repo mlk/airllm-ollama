@@ -544,3 +544,43 @@ def test_a_code_tag_example_is_not_a_call() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_an_escaped_opening_marker_is_not_a_call() -> None:
+    raw = 'Example: \\<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_double_backslash_before_the_marker_is_an_escaped_backslash() -> None:
+    raw = 'Example: \\\\<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_think_marker_inside_a_call_does_not_swallow_the_next_call() -> None:
+    raw = (
+        '<tool_call>{"name": "save", "arguments": {"text": "<think>"}}</tool_call>'
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["save", "get_weather"]
+
+
+def test_a_heading_boundary_stops_a_code_span() -> None:
+    raw = (
+        "# unmatched `\n"
+        '# Example: `<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`'
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
