@@ -41,15 +41,17 @@ milestones (epics):
    **every** suggestion:
 
    * implement the suggestion (commit on the same branch, push again),
-   * ignore it — then say why in a reply to the comment,
+   * ignore it — then say why in the answer,
    * or, when it is valid but out of scope for this ticket, file a new issue
      (`gh issue create`) or extend an existing one and reference that issue in
-     the reply.
+     the answer.
 
    A PR is not done before the reviewer has been answered. Do not leave a
-   suggestion unaddressed and unmentioned. The job posts **one** summary
-   comment per pull request, edits it on the next run, and replaces the inline
-   comments — so a new run does not pile up on top of the old one.
+   suggestion unaddressed and unmentioned. The answer goes into a **comment of
+   the pull request**, not into a reply to an inline comment: the action
+   replaces its inline comments and edits its summary on the next run, so a
+   reply to them would be orphaned. Name every finding you answer — by its
+   file and its line — so that the next reader can follow.
 
 ## Tooling
 
