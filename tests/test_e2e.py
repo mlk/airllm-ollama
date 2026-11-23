@@ -122,19 +122,19 @@ def test_api_generate_forwards_the_options(service: TestClient, factory: FakeFac
 def test_api_generate_renders_the_system_prompt_with_the_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
-    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
 
     service.post(
         "/api/generate",
         json={"model": MODEL, "prompt": PROMPT, "system": "Be terse."},
     )
 
-    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
-    assert factory.model.tokenizer.renderings == [
-        [
-            {"role": "system", "content": "Be terse."},
-            {"role": "user", "content": PROMPT},
-        ]
+    assert factory.model.tokenizer.prompts == [
+        "<​|im_start|>assistant\nBe terse.\n" + PROMPT + "\n[]"
+    ]
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": PROMPT},
     ]
 
 
@@ -581,7 +581,7 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
     """A streamed generation must not lose the system message."""
-    factory.model.tokenizer.template = "<|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
     factory.model.chunks = ["blue ", "sky"]
 
     response = service.post(
@@ -597,12 +597,12 @@ def test_a_stream_renders_the_system_prompt_with_the_chat_template(
     assert response.status_code == 200
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert "".join(event["response"] for event in events[:-1]) == "blue sky"
-    assert factory.model.tokenizer.prompts == ["<|im_start|>assistant\n"]
-    assert factory.model.tokenizer.renderings == [
-        [
-            {"role": "system", "content": "Be terse."},
-            {"role": "user", "content": PROMPT},
-        ]
+    assert factory.model.tokenizer.prompts == [
+        "<​|im_start|>assistant\nBe terse.\n" + PROMPT + "\n[]"
+    ]
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "system", "content": "Be terse."},
+        {"role": "user", "content": PROMPT},
     ]
 
 

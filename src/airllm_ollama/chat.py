@@ -319,8 +319,22 @@ def _verified(
     The sentinels are unambiguous markers that survive every tool argument
     serialization (JSON, dict literal, ``<parameter>`` blocks), so a
     template that drops the offered tools or a part of the tool history is
-    detected here and falls back to the transcript.
+    detected here and falls back to the transcript. A sentinel appended to
+    the system message catches templates that silently drop it (e.g. one
+    that renders the system prompt only for a trailing user turn).
     """
+    candidate = list(candidate)
+    system_probe = None
+    for index, message in enumerate(candidate):
+        if message.role == "system" and message.content.strip():
+            system_probe = f"qxsys{secrets.token_hex(4)}"
+            candidate[index] = ChatTurn(
+                "system",
+                f"{message.content}\n{system_probe}",
+                message.tool_calls,
+                message.tool_name,
+            )
+            break
     if tools:
         probe = f"qxprobe{secrets.token_hex(4)}"
         parameter = f"qxprobearg{secrets.token_hex(4)}"
@@ -345,12 +359,14 @@ def _verified(
     for message in candidate:
         for call in message.tool_calls:
             markers.append(call.function.name)
-    if probe_tools is None and not markers:
+    if probe_tools is None and not markers and system_probe is None:
         return True
     rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
     squashed = _squash(rendered)
+    if system_probe is not None and system_probe not in squashed:
+        return False
     if probe is not None and (
         parameter is None or probe not in squashed or parameter not in squashed
     ):
@@ -446,16 +462,66 @@ def _render_with_template(
     return rendered
 
 
+def _order_tool_results(payload: list[dict[str, object]]) -> None:
+    """Reorder each run of tool results to match the order of the calls.
+
+    A client may send the results of a parallel tool call batch in any
+    order. A template that renders tool results without names or ids
+    (Qwen2.5) can only associate them with the calls by position, so each
+    maximal run of consecutive tool messages is reordered to follow the
+    pending calls: a result whose ``tool_name`` matches a pending call goes
+    in the call's position, the remaining results keep their relative
+    order. Calls and results without names keep their client-given order.
+    """
+    pending: list[str] = []
+    index = 0
+    while index < len(payload):
+        message = payload[index]
+        calls = message.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            for call in cast("list[dict[str, Any]]", calls):
+                function = call.get("function")
+                name = function.get("name") if isinstance(function, dict) else ""
+                pending.append(str(name))
+            index += 1
+            continue
+        if message.get("role") != "tool":
+            index += 1
+            continue
+        end = index
+        while end < len(payload) and payload[end].get("role") == "tool":
+            end += 1
+        run = payload[index:end]
+        used = [False] * len(run)
+        ordered: list[dict[str, object]] = []
+        for name in list(pending):
+            for index_in_run, item in enumerate(run):
+                if used[index_in_run]:
+                    continue
+                if str(item.get("tool_name") or "") != name:
+                    continue
+                used[index_in_run] = True
+                ordered.append(item)
+                pending.remove(name)
+                break
+        ordered.extend(item for position, item in enumerate(run) if not used[position])
+        payload[index:end] = ordered
+        index = end
+
+
 def _assign_call_ids(payload: list[dict[str, object]]) -> None:
     """Assign synthetic call ids to the tool calls of an assistant turn.
 
     The Mistral family of templates requires every tool call to carry a
     nine-character alphanumeric ``id`` and every tool result a matching
-    ``tool_call_id``. Other templates ignore the keys. Tool results are
-    matched to their call by ``tool_name`` when the client sends it and by
-    order of appearance otherwise. The ids are deterministic for a given
-    history.
+    ``tool_call_id``. Other templates ignore the keys. The run of tool
+    results is reordered first (see :func:`_order_tool_results`), so the
+    results line up with the calls by position; each tool result then gets
+    the id of the call it answers, matched by ``tool_name`` when the client
+    sends it and by order of appearance otherwise. The ids are
+    deterministic for a given history.
     """
+    _order_tool_results(payload)
     counter = 0
     pending: list[tuple[str, str]] = []  # (name, id), oldest first
     for message in payload:

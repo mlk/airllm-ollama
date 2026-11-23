@@ -41,13 +41,14 @@ def test_render_chat_uses_the_chat_template() -> None:
         def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
             """Render the messages the way a chat template would."""
             self.rendered = messages
-            return "<|im_start|>assistant\n"
+            contents = "".join(str(message.get("content", "")) for message in messages)
+            return "<|im_start|>assistant\n" + contents
 
     tokenizer = TemplateTokenizer()
 
     rendered = render_chat(tokenizer, MESSAGES)
 
-    assert rendered.text == "<|im_start|>assistant\n"
+    assert rendered.text.endswith("Be brief.HelloHi!")
     assert tokenizer.rendered == [
         {"role": "system", "content": "Be brief."},
         {"role": "user", "content": "Hello"},
@@ -1008,3 +1009,103 @@ def test_a_template_that_ignores_tools_falls_back_even_if_the_user_names_the_too
     rendered = render_chat(NameEchoTokenizer(), messages, TOOLS)
 
     assert "Tools: [" in rendered.text
+
+
+def test_a_template_that_silently_drops_the_system_message_gets_the_merged_messages() -> None:
+    """A template that skips the system message fails verification."""
+
+    class SystemBlindTokenizer:
+        """Tokenizer whose template never renders the system role."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render every message except the system one."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", ""))
+                for message in messages
+                if isinstance(message, dict) and message.get("role") != "system"
+            )
+
+    tokenizer = SystemBlindTokenizer()
+
+    render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
+
+    assert tokenizer.renderings[-1] == [{"role": "user", "content": "Be brief.\n\nHello"}]
+
+
+def test_a_template_that_drops_the_system_message_even_merged_falls_back() -> None:
+    """A template that never renders the history falls back to the transcript."""
+
+    class EmptyTokenizer:
+        """Tokenizer whose template renders nothing usable."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render an empty answer."""
+            return ""
+
+    rendered = render_chat(
+        EmptyTokenizer(), [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
+    )
+
+    assert "Be brief." in rendered.text
+    assert "Hello" in rendered.text
+
+
+def test_tool_results_are_reordered_to_match_the_calls() -> None:
+    """Parallel results in arbitrary order are aligned to their calls."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Compare Paris and Berlin"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+                ToolCall(function=ToolCallFunction(name="get_time", arguments={"city": "Berlin"})),
+            ),
+        ),
+        ChatTurn("tool", "18:00", tool_name="get_time"),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["tool_name"] for message in tool_messages] == ["get_weather", "get_time"]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call00001", "call00002"]
+
+
+def test_tool_results_without_a_matching_call_keep_their_order() -> None:
+    """Results that match no call keep their relative order, after the matched ones."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Run the tools"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="alpha", arguments={})),
+                ToolCall(function=ToolCallFunction(name="beta", arguments={})),
+            ),
+        ),
+        ChatTurn("tool", "unmatched one", tool_name="other"),
+        ChatTurn("tool", "beta result", tool_name="beta"),
+        ChatTurn("tool", "unmatched two", tool_name="another"),
+        ChatTurn("tool", "alpha result", tool_name="alpha"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["tool_name"] for message in tool_messages] == [
+        "alpha",
+        "beta",
+        "other",
+        "another",
+    ]

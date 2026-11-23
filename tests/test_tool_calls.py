@@ -718,3 +718,63 @@ def test_a_call_after_a_closed_script_is_parsed() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_think_block_spanning_a_blank_line_is_not_executed() -> None:
+    raw = (
+        "<think>\nThinking.\n\n"
+        'Maybe <tool_call>{"name": "delete_file", "arguments": {}}</tool_call> </think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_call_inside_a_single_quoted_attribute_is_not_executed() -> None:
+    raw = (
+        'Example: <a title=\'<tool_call>{"name": "delete_file", '
+        '"arguments": {}}</tool_call>\'>link</a>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_call_inside_an_attribute_containing_a_greater_than_sign() -> None:
+    raw = (
+        'Example: <a title=\'a > b <tool_call>{"name": "delete_file", '
+        '"arguments": {}}</tool_call>\'>link</a>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_comment_opener_inside_call_arguments_does_not_swallow_the_next_call() -> None:
+    raw = (
+        '<tool_call>{"name": "save", "arguments": {"text": "<!--"}}</tool_call>'
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["save", "get_weather"]
+
+
+def test_a_call_after_an_inline_code_example_is_executed() -> None:
+    raw = 'Example: `<div>`\n\n<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_call_after_an_escaped_tag_is_executed() -> None:
+    raw = 'Example: \\<div>\n\n<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]

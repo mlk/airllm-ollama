@@ -87,6 +87,21 @@ def _is_escaped(text: str, position: int) -> bool:
     return slashes % 2 == 1
 
 
+_NULL = "\x00"
+
+
+def _mask_think(text: str) -> str:
+    """Replace the reasoning delimiters with NUL bytes of the same length.
+
+    CommonMark classifies a line starting with ``<think>`` as an HTML block,
+    which would swallow the reasoning block into a fence region and hide
+    the very delimiters this module looks for. Masking keeps the offsets of
+    the text unchanged while making the delimiters invisible to the Markdown
+    parser.
+    """
+    return _THINK_TAG.sub(lambda match: _NULL * len(match.group(0)), text)
+
+
 def _comment_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Return the spans of the HTML comments, honouring the blocked regions."""
     regions: list[tuple[int, int]] = []
@@ -112,6 +127,8 @@ def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, 
     raw_text: tuple[str, int] | None = None
     for match in _TAG.finditer(text):
         if _is_blocked(blocked, match.start(), match.end()):
+            continue
+        if _is_escaped(text, match.start()):
             continue
         closing, name, _attrs = match.groups()
         name = name.lower()
@@ -144,6 +161,27 @@ def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, 
         regions.append((raw_text[1], len(text)))
     for _name, start in stack:
         regions.append((start, len(text)))
+    return regions
+
+
+def _tag_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of every tag-like ``<...>`` in the text.
+
+    A call whose whole span lies inside a tag is part of an attribute
+    value — markup, never an action. The tool-call markers themselves are
+    not tags and are not reported. Tags that start inside a blocked
+    region, or are backslash-escaped, are not tags either.
+    """
+    regions: list[tuple[int, int]] = []
+    for match in _TAG.finditer(text):
+        if _is_blocked(blocked, match.start(), match.end()):
+            continue
+        if _is_escaped(text, match.start()):
+            continue
+        name = match.group(2).lower()
+        if name == "think":
+            continue
+        regions.append((match.start(), match.end()))
     return regions
 
 
@@ -331,28 +369,28 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
 
     Fenced and indented code blocks, inline code spans, HTML blocks, and
     reasoning blocks (``<think>...</think>``) are not calls — an example the
-    model writes for the user is never executed. Reasoning blocks are
-    computed last and mask their whole content, so nothing inside them is
-    ever parsed as markup.
+    model writes for the user is never executed. Calls are scanned first
+    and are opaque to every later pass: their contents may contain anything,
+    including markup-looking text, so nothing inside a call is ever a
+    region of its own. Regions that end up covering a call make the call
+    inert.
     """
-    fences = _markdown_blocks(text)
-    comments = _comment_regions(text, fences)
-    # Calls are scanned once, up front, and are opaque to everything that
-    # follows: their contents (which may look like anything) never produce
-    # regions of their own.
-    calls = _call_spans(text, _merge_regions(fences + comments))
-    html = _html_regions(text, _merge_regions(fences + comments + calls))
-    blocks = _merge_regions(fences + comments + html)
-    segments = _segments(text)
-    # Inline spans pair backticks whose positions are not inside a call
-    # (backticks in call arguments are not code spans); a span that opens
-    # before a call and closes after it still covers it, and the call is
-    # dropped below.
-    inline = _inline_spans(text, _merge_regions(blocks + calls), segments)
-    blocking = _merge_regions(blocks + inline)
-    calls = [call for call in calls if not _intersects(blocking, call[0], call[1])]
-    think = _think_regions(text, _merge_regions(blocking + calls))
-    return _merge_regions(blocking + think)
+    masked = _mask_think(text)
+    fences = _markdown_blocks(masked)
+    tag_regions = _tag_regions(text, fences)
+    calls = _call_spans(text, _merge_regions(fences + tag_regions))
+    comments = _comment_regions(text, _merge_regions(fences + calls))
+    blocks = _merge_regions(fences + comments)
+    segments = _segments(masked)
+    # Inline spans pair backticks whose positions are outside calls and
+    # blocks; a pair that opens before a call and closes after it covers
+    # the call, and the call is dropped below.
+    inline = _inline_spans(text, _merge_regions(blocks + calls + tag_regions), segments)
+    think = _think_regions(text, _merge_regions(blocks + inline + calls))
+    blocks = _merge_regions(blocks + think)
+    html = _html_regions(text, _merge_regions(blocks + calls + inline))
+    blocking = _merge_regions(blocks + inline + html)
+    return blocking
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
