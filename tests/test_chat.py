@@ -821,44 +821,36 @@ class MistralTokenizer:
     ``tool_call_id`` of the same shape.
     """
 
-    TEMPLATE = """
-{% for message in messages %}
-{%- if message["role"] == "user" -%}
-[INST] {{ message["content"] }} [/INST]
-{%- elif message.tool_calls is defined and message.tool_calls is not none -%}
-[TOOL_CALLS] [
-{%- for tool_call in message.tool_calls %}
-{{ tool_call.function | tojson }}
-{%- if not tool_call.id is defined or tool_call.id | length != 9 %}
-{{ raise_exception("tool call id must be 9 alphanumeric characters") }}
-{%- endif %}
-{{ ', "id": "' + tool_call.id + '"}' }}
-{%- if not loop.last %}, {% endif %}
-{%- endfor %}]
-{%- elif message["role"] == "tool" -%}
-[TOOL_RESULTS] {"content": {{ message.content | string }},
- "call_id": "{{ message.tool_call_id }}"}[/TOOL_RESULTS]
-{%- if not message.tool_call_id is defined or message.tool_call_id | length != 9 %}
-{{ raise_exception("tool call id must be 9 alphanumeric characters") }}
-{% endif %}
-{%- endif %}
-{%- endfor %}
-"""
-
-    def __init__(self) -> None:
-        """Initialise the Jinja environment."""
-        import jinja2
-
-        self.env = jinja2.Environment()
-        self.env.globals["raise_exception"] = self._raise
-
-    @staticmethod
-    def _raise(message: str) -> None:
-        raise ValueError(message)
-
     def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
-        """Render the messages like Mistral's template does."""
-        return self.env.from_string(self.TEMPLATE).render(messages=messages, bos_token="<s>")
+        """Render the messages, raising without valid identifiers."""
+        parts: list[str] = ["<s>"]
+        for message in messages:
+            if message["role"] == "user":
+                parts.append(f"[INST] {message['content']} [/INST]")
+                continue
+            tool_calls = message.get("tool_calls")
+            if tool_calls:
+                parts.append("[TOOL_CALLS] [")
+                for index, call in enumerate(tool_calls):
+                    call_id = call.get("id")
+                    if not isinstance(call_id, str) or len(call_id) != 9 or not call_id.isalnum():
+                        raise ValueError("tool call id must be 9 alphanumeric characters")
+                    arguments = json.dumps(call["function"]["arguments"])
+                    parts.append(
+                        f'{{"name": "{call["function"]["name"]}", '
+                        f'"arguments": {arguments}, "id": "{call_id}"}}'
+                    )
+                    if index != len(tool_calls) - 1:
+                        parts.append(", ")
+                parts.append("]")
+                continue
+            if message["role"] == "tool":
+                call_id = message.get("tool_call_id")
+                if not isinstance(call_id, str) or len(call_id) != 9 or not call_id.isalnum():
+                    raise ValueError("tool call id must be 9 alphanumeric characters")
+                parts.append(f'[TOOL_RESULTS] {{"content": {message["content"]}, ')
+                parts.append(f'"call_id": "{call_id}"}}[/TOOL_RESULTS]')
+        return "".join(parts)
 
 
 def test_a_mistral_style_template_with_identifiers_renders_the_history() -> None:
