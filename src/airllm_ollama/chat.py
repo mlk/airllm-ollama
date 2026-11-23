@@ -432,11 +432,11 @@ def _mark_argument_values(
     Strings get a random sentinel suffix (a different enum member when the
     schema constrains the value), numbers are replaced with a different
     value inside the schema bounds (a unique ten-digit marker when
-    unconstrained), booleans are flipped to the other enum member when the
-    enum allows it, and booleans/null/empty containers contribute their
-    key as a marker. The structure, keys and constraints of the arguments
-    are otherwise untouched, so the marked call stays valid for templates
-    that check the arguments against the schema.
+    unconstrained). Booleans and null carry no sentinel of their own — the
+    per-call probe pair in the arguments covers them. The structure, keys
+    and constraints of the arguments are otherwise untouched, so the marked
+    call stays valid for templates that check the arguments against the
+    schema.
     """
     markers: list[str] = []
     counter = 0
@@ -447,16 +447,10 @@ def _mark_argument_values(
         enum = sch.get("enum")
         enum = enum if isinstance(enum, list) else None
         if isinstance(current, bool) or current is None:
-            flipped = None
-            if isinstance(enum, list):
-                candidates = [o for o in enum if isinstance(o, bool) and o is not current]
-                if candidates:
-                    flipped = candidates[0]
-            if flipped is not None:
-                markers.append(str(flipped).lower())
-            elif key is not None:
-                markers.append(key)
-            return flipped if flipped is not None else current
+            # Booleans and null cannot carry a unique sentinel; the
+            # per-call probe pair (and the string markers) prove the call;
+            # nothing schema-satisfiable is required here.
+            return current
         if isinstance(current, (dict, list)) and not current:
             # Empty containers have nothing to mark; require their key.
             if key is not None:
@@ -632,12 +626,17 @@ def _verified(
         return False
     # A second render with a minimal history proves the tools themselves
     # are rendered, independent of the conversation: a template that
-    # prints the history but drops the tool definitions fails here.
-    blank = [ChatTurn("user", f"qxprobeblank{secrets.token_hex(4)}")]
+    # prints the history but drops the tool definitions fails here. The
+    # system message is kept, so a template that insists on one still
+    # accepts the probe.
+    blank = [message for message in candidate if message.role == "system"]
+    blank.append(ChatTurn("user", f"qxprobeblank{secrets.token_hex(4)}"))
     rendered = _render_with_template(render, blank, probe_tools, supports_tool_calls, False)
     if rendered is None:
         return False
     squashed = _squash(_unescape_json(rendered)).lower()
+    if system_probe is not None and system_probe.lower() not in squashed:
+        return False
     return all(marker.lower() in squashed for marker in tool_markers)
 
 

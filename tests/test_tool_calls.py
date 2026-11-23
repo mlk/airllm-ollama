@@ -972,3 +972,55 @@ def test_a_prompt_without_prefill_is_not_think() -> None:
     from airllm_ollama.tool_calls import prompt_ends_in_think
 
     assert not prompt_ends_in_think("user: hello\nassistant: ")
+
+
+def test_a_malformed_opener_does_not_hide_a_later_code_span() -> None:
+    raw = 'Example: `<tool_call>` and then `<tool_call>{"name":"delete_file"}</tool_call>`'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert calls == []
+    assert text == raw
+
+
+def test_an_incomplete_tag_does_not_swallow_a_later_reasoning_block() -> None:
+    raw = '`<a ` then <think>Never <tool_call>{"name":"delete_file"}</tool_call></think>`'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_reference_definition_title_is_masked_too() -> None:
+    raw = '[x]: https://example.com \'<tool_call>{"name":"delete_file"}</tool_call>\'\n\nSee [x].'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_an_escaped_label_does_not_open_a_link() -> None:
+    raw = '\\[x](url/`) <tool_call>{"name":"delete_file"}</tool_call>`'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_raw_text_element_with_a_comparison_inside_closes_correctly() -> None:
+    raw = (
+        "Example: <script>if (a <b ) x=1;</script> "
+        '<tool_call>{"name":"f","arguments":{}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["f"]
+
+
+def test_prompt_ends_in_think_with_unclosed_fence_and_prefill() -> None:
+    from airllm_ollama.tool_calls import prompt_ends_in_think
+
+    raw = "user: see\n```python\nx = 1\nassistant: <think>\n"
+
+    assert prompt_ends_in_think(raw)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from bisect import bisect_right
 from collections.abc import Iterator
 
 from markdown_it import MarkdownIt
@@ -127,6 +128,7 @@ def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
             continue
         pos = index
         end = length
+        aborted = False
         while pos < length:
             char = text[pos]
             if char == ">":
@@ -150,11 +152,20 @@ def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
                     break
                 pos = closed + 1
                 continue
+            if char in "<`":
+                # A '<' or backtick cannot appear inside an unquoted
+                # attribute value: this is not a tag at all, it is text
+                # (an incomplete example, a template snippet, ...).
+                aborted = True
+                break
             # Anything else is part of the tag (an attribute name, an
             # equals sign, or a bare value): consume until the next
             # delimiter. One character at a time, never backtracking.
             while pos < length and text[pos] not in " \t\r\n>\"'":
                 pos += 1
+        if aborted:
+            position = start + 1
+            continue
         yield start, end, closing, name
         position = end
 
@@ -190,15 +201,14 @@ def _comment_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[in
 def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Return the spans of the HTML regions of the text.
 
-    Raw-text elements (``<script>`` and the like) and nested elements all
-    swallow everything inside them — a call inside any of them is markup,
-    never an action. An unterminated element swallows the rest of the text,
-    like its HTML counterpart does. A tag name may not contain ``<`` or
-    ``>``; comments need not match any tag grammar.
+    Elements swallow everything inside them — a call inside any of them is
+    markup, never an action. An unterminated element swallows the rest of
+    the text, like its HTML counterpart does. A tag name may not contain
+    ``<`` or ``>``; comments need not match any tag grammar. Raw-text
+    elements are supplied by the caller as blocked regions.
     """
     regions: list[tuple[int, int]] = []
-    stack: list[tuple[str, int]] = []
-    raw_text: tuple[str, int] | None = None
+    open_by_name: dict[str, list[int]] = {}
     for start, end, closing, name in _iter_tags(text):
         if _is_blocked(blocked, start, end):
             continue
@@ -208,31 +218,28 @@ def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, 
             # The reasoning block is handled separately by _think_regions;
             # its delimiters are not HTML tags and never pair here.
             continue
-        if raw_text is not None:
-            if closing and name == raw_text[0]:
-                regions.append((raw_text[1], end))
-                raw_text = None
-            continue
         if closing:
             # Pop everything up to and including the matching open tag; an
             # unmatched close is ignored.
-            for index in range(len(stack) - 1, -1, -1):
-                if stack[index][0] == name:
-                    start_of_element = stack[index][1]
-                    del stack[index:]
-                    regions.append((start_of_element, end))
-                    break
+            starts = open_by_name.get(name)
+            if starts:
+                start_of_element = starts.pop()
+                regions.append((start_of_element, end))
+                for other, other_starts in open_by_name.items():
+                    if other == name:
+                        continue
+                    while other_starts and other_starts[-1] > start_of_element:
+                        opened = other_starts.pop()
+                        regions.append((opened, end))
             continue
         if name in _RAW_TEXT_ELEMENTS:
-            raw_text = (name, start)
             continue
         if name in _VOID_ELEMENTS:
             continue
-        stack.append((name, start))
-    if raw_text is not None:
-        regions.append((raw_text[1], len(text)))
-    for _name, start in stack:
-        regions.append((start, len(text)))
+        open_by_name.setdefault(name, []).append(start)
+    for starts in open_by_name.values():
+        for start in starts:
+            regions.append((start, len(text)))
     return regions
 
 
@@ -256,147 +263,189 @@ def _tag_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, i
     return regions
 
 
+_RAW_TEXT_NAMES = (
+    "script",
+    "style",
+    "pre",
+    "xmp",
+    "iframe",
+    "noembed",
+    "noframes",
+    "noscript",
+    "plaintext",
+    "title",
+    "textarea",
+)
+
+_RAW_OPEN = re.compile(
+    r"<(" + "|".join(_RAW_TEXT_NAMES) + r")((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>",
+    re.IGNORECASE,
+)
+
+
 def _raw_text_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Return the spans of the raw-text elements (script, style, ...).
 
     Their contents are opaque, like in HTML: a reasoning delimiter or a
-    comment inside them is text, not markup. An unterminated raw-text
-    element swallows the rest of the text.
+    comment inside them is text, not markup. The matching close tag is found
+    with a plain text search, so markup inside the element (including
+    stray angle brackets) is not parsed as tags. An unterminated
+    raw-text element swallows the rest of the text.
     """
     regions: list[tuple[int, int]] = []
-    raw_text: tuple[str, int] | None = None
-    for start, end, closing, name in _iter_tags(text):
-        if _is_blocked(blocked, start, end):
+    for match in _RAW_OPEN.finditer(text):
+        if _is_blocked(blocked, match.start(), match.end()):
             continue
-        if _is_escaped(text, start):
+        if _is_escaped(text, match.start()):
             continue
-        if name not in _RAW_TEXT_ELEMENTS:
-            continue
-        if closing:
-            if raw_text is not None and name == raw_text[0]:
-                regions.append((raw_text[1], end))
-                raw_text = None
-            continue
-        if raw_text is None:
-            raw_text = (name, start)
-    if raw_text is not None:
-        regions.append((raw_text[1], len(text)))
+        name = match.group(1).lower()
+        close = re.compile(r"</\s*" + re.escape(name) + r"\s*>", re.IGNORECASE)
+        closing = close.search(text, match.end())
+        regions.append((match.start(), len(text) if closing is None else closing.end()))
     return regions
 
 
 def _link_destination_spans(text: str) -> list[tuple[int, int]]:
     """Return the spans of inline links (destination and optional title).
 
-    A link is only recognized when ``](`` is preceded by a bracketed
-    label and followed by a valid destination (a bare run with balanced
-    parentheses, or an angle-bracketed destination) and an optional title,
-    closed by ``)`` — the rules CommonMark applies. The returned region
-    covers everything between the parentheses, so backticks inside the
-    destination or the title are not treated as code delimiters, and a
-    call inside the link metadata is never an action. Reference definitions
-    (``[label]: destination``) are covered as well.
+    A link is only recognized when ``](`` — with an unescaped closing
+    bracket — is preceded by an unescaped bracketed label and followed by a
+    valid destination (a bare run with balanced parentheses, or an
+    angle-bracketed destination) and an optional title, closed by ``)`` —
+    the rules CommonMark applies. The returned region covers everything
+    between the parentheses, destination and title alike, so backticks
+    inside the link metadata are not code delimiters and a call inside it
+    never executes. Reference definitions (``[label]: destination "title"``)
+    are masked completely as well.
     """
     regions: list[tuple[int, int]] = []
-    last_close = text.rfind(")")
     for match in re.finditer(r"\]\(", text):
-        # Walk back to the matching "[" for the label; a ")(" without a
-        # label is not a link. Labels may nest brackets one level deep.
+        # Walk back to the matching "[" for the label; a ")(" without an
+        # unescaped label is not a link. Labels may nest brackets. An
+        # escaped bracket is not a delimiter.
         depth = 0
-        label_start = -1
-        for i in range(match.start(), max(-1, match.start() - 4096) - 1, -1):
-            char = text[i]
-            if char == "]":
-                depth += 1
-            elif char == "[":
+        found_open = False
+        position = match.start()
+        while position >= 0:
+            char = text[position]
+            if char == "[":
+                if _is_escaped(text, position):
+                    position -= 1
+                    continue
                 depth -= 1
                 if depth == 0:
-                    label_start = i
+                    found_open = True
                     break
-        if label_start == -1:
+                position -= 1
+                continue
+            if char == "]":
+                if _is_escaped(text, position):
+                    position -= 1
+                    continue
+                depth += 1
+                position -= 1
+                continue
+            position -= 1
+        if not found_open:
             continue
-        start = match.end()
-        if start > last_close:
+        if text.find(")", match.end()) == -1:
             # No closing paren anywhere after this point: not a link.
             continue
-        span = _parse_link_tail(text, start)
+        span = _parse_link_tail(text, match.end())
         if span is not None:
             regions.append(span)
-    for match in re.finditer(r"^\[[^\]]*\]:\s*(\S+)", text, re.MULTILINE):
-        regions.append((match.start(1), match.end(1)))
+    for match in re.finditer(r"(?m)^[ ]{0,3}\[([^\]\\]|\\.)*\]:", text):
+        start = match.end()
+        while start < len(text) and text[start] in " \t":
+            start += 1
+        span = _parse_link_tail(text, start, closing=("\n", "\r"))
+        if span is not None:
+            regions.append(span)
     return regions
 
 
-def _parse_link_tail(text: str, start: int) -> tuple[int, int] | None:
-    """Parse ``destination (title)?`` + ``)`` after the opening parenthesis.
+def _parse_link_tail(
+    text: str, start: int, closing: tuple[str, ...] = (")",)
+) -> tuple[int, int] | None:
+    """Parse ``destination (title)?`` plus the closing delimiter.
 
-    Returns the span covering the destination and the optional title (up to,
-    but excluding, the closing parenthesis), or ``None`` when the text does
-    not hold a valid link tail. The scan is bounded and single pass.
+    For inline links the tail ends with an unescaped ``)``; for reference
+    definitions it ends at a newline. Returns the span covering the
+    destination and the optional title, or ``None`` when the text does not
+    hold a valid tail — such input is not a link at all.
     """
     length = len(text)
     pos = start
-    limit = min(length, start + 4096)
     # Skip leading spaces: a destination may be omitted, leaving only a title.
-    while pos < limit and text[pos] in " \t\r\n":
+    while pos < length and text[pos] in " \t":
         pos += 1
+    if pos < length and text[pos] in closing:
+        # Empty destination, only a closing bracket or a title.
+        if text[pos] == ")":
+            return (start, pos)
+        return None
     if pos < length and text[pos] == "<":
         # Angle-bracketed destination: anything except control chars,
         # closed by '>'.
         end = pos + 1
-        while end < limit and text[end] != ">" and text[end] not in "\r\n":
+        while end < length and text[end] != ">" and text[end] not in "\r\n":
             end += 1
-        if end >= limit or text[end] != ">":
+        if end >= length or text[end] != ">":
             return None
         pos = end + 1
     else:
         # Bare destination: no spaces, parentheses must balance.
         depth = 0
-        while pos < limit:
+        while pos < length:
             char = text[pos]
             if char == "\\":
                 pos += 2
                 continue
             if char in " \t\r\n)":
-                if char == ")" and depth == 0:
-                    break
                 if char == ")":
+                    if depth == 0:
+                        if closing == (")",):
+                            return (start, pos)
+                        return None
                     depth -= 1
                     pos += 1
                     continue
-                break
+                if depth == 0:
+                    break
+                return None
             if char == "(":
                 depth += 1
-                if depth > 32:
-                    return None
                 pos += 1
                 continue
             pos += 1
         else:
             return None
-    # Optional title, then the closing parenthesis.
-    while pos < limit and text[pos] in " \t\r\n":
+    if pos >= length:
+        return None
+    while pos < length and text[pos] in " \t":
         pos += 1
-    if pos < length and text[pos] == ")":
+    if pos < length and text[pos] in closing:
         return (start, pos)
     # Optional title: "..." or '...' or (...).
-    if pos < length and text[pos] in "\"'(":
-        quote = text[pos]
-        close = ")" if quote == "(" else quote
-        end = pos + 1
-        while end < limit:
-            if text[end] == "\\":
-                end += 2
-                continue
-            if text[end] == close:
-                break
-            end += 1
-        if end >= limit:
-            return None
-        pos = end + 1
-        while pos < limit and text[pos] in " \t\r\n":
-            pos += 1
-        if pos < length and text[pos] == ")":
-            return (start, pos)
+    if text[pos] not in "\"'(":
+        return None
+    quote = text[pos]
+    close = ")" if quote == "(" else quote
+    end = pos + 1
+    while end < length:
+        if text[end] == "\\":
+            end += 2
+            continue
+        if text[end] == close:
+            break
+        end += 1
+    if end >= length:
+        return None
+    pos = end + 1
+    while pos < length and text[pos] in " \t":
+        pos += 1
+    if pos < length and text[pos] in closing:
+        return (start, pos)
     return None
 
 
@@ -410,12 +459,34 @@ def _line_starts(text: str) -> list[int]:
 
 
 def _intersects(regions: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(start < region_end and end > region_start for region_start, region_end in regions)
+    """Return whether a span overlaps any region (regions must be sorted)."""
+    if not regions:
+        return False
+    index = bisect_right(regions, (start, math.inf)) - 1
+    for candidate in (
+        regions[index] if index >= 0 else None,
+        regions[index + 1] if index + 1 < len(regions) else None,
+    ):
+        if candidate and candidate[0] < end and start < candidate[1]:
+            return True
+    return False
 
 
 def _is_blocked(blocked: list[tuple[int, int]], start: int, end: int) -> bool:
-    """Return whether a span overlaps a blocked region."""
-    return _intersects(blocked, start, end)
+    """Return whether a span overlaps a blocked region.
+
+    ``blocked`` must be sorted by start (as ``_merge_regions`` produces).
+    Lookup is binary search plus a check of the immediate neighbours of
+    the insertion point.
+    """
+    index = bisect_right(blocked, (start, math.inf)) - 1
+    for candidate in (
+        blocked[index] if index >= 0 else None,
+        blocked[index + 1] if index + 1 < len(blocked) else None,
+    ):
+        if candidate and candidate[0] < end and start < candidate[1]:
+            return True
+    return False
 
 
 def _think_regions(
@@ -505,26 +576,18 @@ def _segments(text: str) -> list[tuple[int, int]]:
     return segments
 
 
-def _markdown_blocks(text: str, fences_to_eof_close: bool = False) -> list[tuple[int, int]]:
-    """Return the fence/code regions the Markdown parser reports.
-
-    With ``fences_to_eof_close`` set, a fence that runs to the end of the
-    text does not mask anything — an unterminated fence in the history
-    must not hide the assistant's think prefill at the tail.
-    """
+def _markdown_blocks(text: str) -> list[tuple[int, int]]:
+    """Return the fence/code regions the Markdown parser reports."""
     try:
         tokens = _MARKDOWN.parse(text)
     except Exception:
-        return [(0, len(text))] if not fences_to_eof_close else []
+        return [(0, len(text))]
     line_starts = _line_starts(text)
-    last_line = len(line_starts) - 1
     regions: list[tuple[int, int]] = []
     for token in tokens:
         if token.map is None:
             continue
         if token.type in ("fence", "code_block", "html_block"):
-            if fences_to_eof_close and token.map[1] >= last_line:
-                continue
             regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
     return regions
 
@@ -610,7 +673,6 @@ def _call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, in
 
 def _pre_think(
     text: str,
-    fences_to_eof_close: bool = False,
 ) -> tuple[
     str,
     list[tuple[int, int]],
@@ -626,23 +688,24 @@ def _pre_think(
     Returns the masked text, the fenced/code regions, the tag spans, the
     opaque call spans (valid and malformed), the inline code spans, the
     comment regions and the raw-text regions. Shared by the region
-    computation and by the prompt scan. With ``fences_to_eof_close`` the
-    fences running to the end of the text are not masked, so a prompt's
-    unterminated fence cannot hide the think prefill at its tail.
+    computation and by the prompt scan.
     """
     masked = _mask_think(text)
-    fences = _markdown_blocks(masked, fences_to_eof_close)
+    fences = _markdown_blocks(masked)
     tags = _tag_regions(text, fences)
     links = _link_destination_spans(text)
-    # Malformed call blocks are opaque too: a quoted `</think>` inside one
-    # is not a reasoning delimiter and its backticks are not code.
+    # Malformed call blocks are opaque to the scans that consume structure
+    # (comments, raw text, reasoning, HTML): a quoted `</think>` inside one
+    # is not a reasoning delimiter. Inline code spans are computed with
+    # only the valid calls as blockers: a malformed opener must not swallow
+    # the code span that follows it.
     calls, malformed = _parse_call_spans(text, _merge_regions(fences + tags + links))
     opaque = _merge_regions([*calls, *malformed])
     segments = _segments(masked)
     # Inline code spans come before comments and HTML blocks: a comment
     # opener inside a code span is an example, not a comment. Backticks
     # inside link destinations are part of the URL, not code delimiters.
-    inline = _inline_spans(text, _merge_regions(fences + tags + links + opaque), segments)
+    inline = _inline_spans(text, _merge_regions(fences + tags + calls + links), segments)
     comments = _comment_regions(text, _merge_regions(fences + tags + inline + opaque))
     raw = _raw_text_regions(text, _merge_regions(fences + comments + inline + opaque))
     return masked, fences, tags, opaque, inline, comments, raw, links
@@ -667,40 +730,23 @@ def _code_regions(text: str, in_think: bool = False) -> list[tuple[int, int]]:
         in_think,
     )
     blocks = _merge_regions(fences + comments + think)
-    html = _html_regions(text, _merge_regions(blocks + calls + inline))
-    # Tag and link spans stay in the blocking set: a call inside a tag (for
-    # instance inside a void element's attribute) or inside a link's
-    # destination or title never executes.
-    return _merge_regions(blocks + inline + html + tags + links)
+    html = _html_regions(text, _merge_regions(blocks + calls + inline + raw))
+    # Tag, link and raw-text spans stay in the blocking set: a call inside
+    # a tag (for instance inside a void element's attribute), inside a
+    # link's destination or title, or inside a script, never executes.
+    return _merge_regions(blocks + inline + html + tags + links + raw)
 
 
 def prompt_ends_in_think(text: str) -> bool:
     """Return whether the text ends inside an unterminated ``<think>`` block.
 
-    A model whose prompt ends with a ``<think>`` prefill (QwQ, Qwen3.5)
-    generates its reasoning before answering; the generated text then starts
-    inside a reasoning block that was opened in the prompt. Callers use
-    this to carry that state into :func:`extract_tool_calls`.
+    Models such as QwQ and Qwen3.5 are prompted with an assistant prefill
+    that opens a reasoning block (``<think>`` at the very end of the
+    prompt). The generated text then continues inside that block, so any
+    reasoning delimiters in it belong to the prefill, and a tool call
+    inside the reasoning must not be treated as an answer. A ``<think>``
+    anywhere else — for instance inside a user message — is not a prefill.
     """
-    _masked, fences, tags, calls, inline, comments, raw, links = _pre_think(
-        text, fences_to_eof_close=True
-    )
-    blocked = _merge_regions(fences + tags + calls + inline + comments + raw + links)
-    depth = 0
-    for match in _THINK_TAG.finditer(text):
-        if _is_blocked(blocked, match.start(), match.end()):
-            continue
-        if _is_escaped(text, match.start()):
-            continue
-        if match.group(1) == "/":
-            depth = max(0, depth - 1)
-        else:
-            depth += 1
-    if depth > 0:
-        return True
-    # The prefill lives at the very end of the prompt: if the text ends
-    # with an opening think tag, the generation starts inside one — no
-    # matter what the history markup looks like.
     return re.search(r"<think\b[^>]*>\s*$", text, re.IGNORECASE) is not None
 
 
