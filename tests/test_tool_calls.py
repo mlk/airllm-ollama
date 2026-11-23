@@ -348,3 +348,32 @@ def test_a_valid_call_whose_arguments_contain_a_fence_is_not_cut_short() -> None
 
     assert [call.function.name for call in calls] == ["save", "delete_file"]
     assert text == ""
+
+
+def test_a_longer_closing_fence_is_required() -> None:
+    raw = '````\n```\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\n````'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_inline_code_span_may_span_lines() -> None:
+    raw = 'see `example\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>` done'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_call_after_a_multiline_code_span_is_still_parsed() -> None:
+    raw = (
+        'see `example\n<tool_call>{"name": "deleted"}</tool_call>` done. '
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]

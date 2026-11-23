@@ -29,38 +29,60 @@ _WHITESPACE = " \t\r\n"
 _FENCES = ("```", "~~~")
 
 
+def _fence_run(text: str, start: int) -> int:
+    """Return the length of the run of the fence character at ``start``."""
+    char = text[start]
+    return len(text[start:]) - len(text[start:].lstrip(char))
+
+
 def _skip_fence(text: str, start: int) -> int:
     """Return the offset after the fenced code block that opens at ``start``.
 
-    The block ends at the line that holds only the fence marker — or at the
-    end of the text when the fence is not closed.
+    The block ends at the first line that holds only the fence character,
+    at least as many as in the opening fence — or at the end of the text
+    when the fence is not closed.
     """
+    char = text[start]
+    run = _fence_run(text, start)
     first_newline = text.find("\n", start)
     if first_newline == -1:
         return len(text)
-    fence = text[start : start + 3]
     position = first_newline + 1
     while True:
         eol = text.find("\n", position)
         line_end = len(text) if eol == -1 else eol
         stripped = text[position:line_end].strip(" \t")
-        if stripped and set(stripped) == {fence[0]} and len(stripped) >= 3:
+        if stripped and set(stripped) == {char} and len(stripped) >= run:
             return len(text) if eol == -1 else eol + 1
         if eol == -1:
             return len(text)
         position = eol + 1
 
 
+def _find_backtick_run(text: str, run: int, start: int) -> int:
+    """Return the offset of a run of exactly ``run`` backticks, or ``-1``."""
+    position = start
+    while True:
+        found = text.find("`" * run, position)
+        if found == -1:
+            return -1
+        before = text[found - 1] if found > 0 else ""
+        after = text[found + run] if found + run < len(text) else ""
+        if before != "`" and after != "`":
+            return found
+        position = found + run
+
+
 def _skip_inline_code(text: str, start: int) -> int:
     """Return the offset after the inline code span that opens at ``start``.
 
-    A span closes at a run of exactly as many backticks as opened it, on the
-    same line; an unmatched run is skipped over and scanning continues.
+    A span closes at a run of exactly as many backticks as opened it —
+    anywhere, even on a later line (inline code spans may contain line
+    breaks). An unmatched run is skipped over and scanning continues.
     """
-    run = len(text[start:]) - len(text[start:].lstrip("`"))
-    closing = text.find("`" * run, start + run)
-    newline = text.find("\n", start + run)
-    if closing == -1 or (newline != -1 and closing > newline):
+    run = _fence_run(text, start)
+    closing = _find_backtick_run(text, run, start + run)
+    if closing == -1:
         return start + run
     return closing + run
 
