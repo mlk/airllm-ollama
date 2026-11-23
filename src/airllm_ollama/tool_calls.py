@@ -33,13 +33,25 @@ _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
 # Inline HTML that is all example text: comments and raw-text elements. A
-# call inside any of these is an example, never an action.
+# call inside any of these is an example, never an action. An unterminated
+# element swallows the rest of the text (like an unterminated comment does
+# in HTML), so it is still not executable.
 _HTML_SPAN = re.compile(
-    r"<!--.*?-->|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?</\1\s*>",
+    r"<!--.*?(?:-->|$)|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?(?:</\1\s*>|$)",
     re.IGNORECASE | re.DOTALL,
 )
 
 _THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
+
+
+def _is_escaped(text: str, position: int) -> bool:
+    """Return whether the character at ``position`` is backslash-escaped."""
+    slashes = 0
+    index = position - 1
+    while index >= 0 and text[index] == "\\":
+        slashes += 1
+        index -= 1
+    return slashes % 2 == 1
 
 
 def _line_starts(text: str) -> list[int]:
@@ -49,22 +61,6 @@ def _line_starts(text: str) -> list[int]:
         starts.append(match.end())
     starts.append(len(text))
     return starts
-
-
-def _markdown_regions(text: str) -> list[tuple[int, int]]:
-    """Return the code and HTML block spans of the text, per CommonMark."""
-    try:
-        tokens = _MARKDOWN.parse(text)
-    except Exception:
-        # An unparseable document: treat it as opaque, nothing is a call.
-        return [(0, len(text))]
-    line_starts = _line_starts(text)
-    regions: list[tuple[int, int]] = []
-    for token in tokens:
-        if token.map is not None and token.type in ("fence", "code_block"):
-            regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
-    regions.extend(match.span() for match in _HTML_SPAN.finditer(text))
-    return regions
 
 
 def _intersects(regions: list[tuple[int, int]], start: int, end: int) -> bool:
@@ -83,6 +79,8 @@ def _think_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int,
     depth = 0
     for match in _THINK_TAG.finditer(text):
         if _intersects(blocked, match.start(), match.end()):
+            continue
+        if _is_escaped(text, match.start()):
             continue
         closing = match.group(1) == "/"
         if not closing:
@@ -132,34 +130,21 @@ def _find_backtick_run(text: str, run: int, start: int, end: int) -> int:
         position = found + run
 
 
-def _segments(text: str) -> list[tuple[int, int]]:
-    """Split the text into paragraphs (delimited by blank lines).
-
-    Code spans cannot span a blank line, so each segment is scanned on its
-    own — a stray backtick in one paragraph can never swallow the markup of
-    the next one, as CommonMark treats it as a literal backtick.
-    """
-    segments: list[tuple[int, int]] = []
-    start = 0
-    for match in re.finditer(r"\n[ \t]*(?:\n|$)", text):
-        segments.append((start, match.start() + 1))
-        start = match.end()
-    if start < len(text):
-        segments.append((start, len(text)))
-    return segments
-
-
-def _inline_code_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _inline_code_regions(
+    text: str,
+    blocked: list[tuple[int, int]],
+    segments: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
     """Return the spans of the inline code spans.
 
     CommonMark: a span opens with a run of backticks and closes at a run of
-    exactly the same length, anywhere in the same paragraph (a span may span
-    line breaks, but never a paragraph boundary). Spans do not open inside
-    a block region.
+    exactly the same length, anywhere inside one block (a span may span
+    line breaks, but never a block boundary). Spans do not open inside a
+    block region.
     """
     regions: list[tuple[int, int]] = []
     blocked_index = 0
-    for segment_start, segment_end in _segments(text):
+    for segment_start, segment_end in segments:
         position = segment_start
         while position < segment_end:
             while blocked_index < len(blocked) and blocked[blocked_index][1] <= position:
@@ -185,20 +170,79 @@ def _inline_code_regions(text: str, blocked: list[tuple[int, int]]) -> list[tupl
     return regions
 
 
+def _parse_blocks(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the code block spans and all top-level block spans of the text.
+
+    Inline code spans may not cross a block boundary, so the caller also
+    needs the boundaries of every block.
+    """
+    try:
+        tokens = _MARKDOWN.parse(text)
+    except Exception:
+        # An unparseable document: treat it as opaque, nothing is a call.
+        return [(0, len(text))], [(0, len(text))]
+    line_starts = _line_starts(text)
+    blocks: list[tuple[int, int]] = []
+    segments: list[tuple[int, int]] = []
+    for token in tokens:
+        if token.map is None:
+            continue
+        span = (line_starts[token.map[0]], line_starts[token.map[1]])
+        if token.type in ("fence", "code_block"):
+            blocks.append(span)
+        elif token.type == "inline":
+            # Code spans may not cross a block boundary; inline tokens are
+            # the smallest blocks that carry inline markup.
+            segments.append(span)
+    regions = list(blocks)
+    regions.extend(match.span() for match in _HTML_SPAN.finditer(text))
+    return regions, segments
+
+
 def _code_regions(text: str) -> list[tuple[int, int]]:
     """Return the spans of the code regions of the text.
 
-    Fenced and indented code blocks, HTML blocks, reasoning blocks and
+    Fenced and indented code blocks, HTML spans, reasoning blocks and
     inline code spans are not calls — an example the model writes for the
     user is never executed. Markdown decides what counts as a code region:
     blockquotes, headings, list items and nested fences all follow the same
     rules as a rendered document.
     """
-    blocks = _merge_regions(_markdown_regions(text))
-    inline = _inline_code_regions(text, blocks)
+    blocks, segments = _parse_blocks(text)
+    inline = _inline_code_regions(text, _merge_regions(blocks), segments)
     blocked = _merge_regions(blocks + inline)
-    thinks = _think_regions(text, blocked)
+    valid = _valid_call_spans(text, blocked)
+    thinks = _think_regions(text, _merge_regions(blocked + valid))
     return _merge_regions(blocked + thinks)
+
+
+def _valid_call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the well-formed tool calls outside the blocked regions.
+
+    Reasoning delimiters inside a call's JSON are data, not reasoning — this
+    keeps them from pairing ``</think>`` with an unrelated opening tag.
+    """
+    spans: list[tuple[int, int]] = []
+    decoder = _strict_decoder()
+    blocked_index = 0
+    position = 0
+    while position < len(text):
+        while blocked_index < len(blocked) and blocked[blocked_index][1] <= position:
+            blocked_index += 1
+        if blocked_index < len(blocked) and blocked[blocked_index][0] <= position:
+            position = blocked[blocked_index][1]
+            continue
+        if text.startswith(_OPEN, position) and not _is_escaped(text, position):
+            found = _parse_call(text, position + len(_OPEN), decoder)
+            if found is not None:
+                _, end = found
+                spans.append((position, end))
+                position = end
+                continue
+            position = _skip_block(text, position)
+            continue
+        position += 1
+    return spans
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
@@ -226,7 +270,7 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
             # contains is an example, not a call.
             position = regions[region_index][1]
             continue
-        if text.startswith(_OPEN, position):
+        if text.startswith(_OPEN, position) and not _is_escaped(text, position):
             found = _parse_call(text, position + len(_OPEN), decoder)
             if found is not None:
                 call, end = found
@@ -276,7 +320,7 @@ def _skip_block(text: str, start: int) -> int:
             in_string = True
             position += 1
             continue
-        if text.startswith(_OPEN, position):
+        if text.startswith(_OPEN, position) and not _is_escaped(text, position):
             depth += 1
             position += len(_OPEN)
             continue

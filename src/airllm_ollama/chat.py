@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition, ToolFunction
 
 # The system message is merged into the first user turn with this separator —
 # the same one the plain join of a model without a template uses.
@@ -232,22 +232,21 @@ def apply_chat_template(
     supports_tool_calls = _template_supports_tool_calls(
         getattr(tokenizer, "chat_template", None), offered is not None
     )
-    candidates = (messages, _merge_system_message(messages))
-    for candidate in candidates:
+    for candidate in (messages, _merge_system_message(messages)):
         if candidate is None:
             continue
-        rendered = _render_with_template(render, candidate, offered, supports_tool_calls)
-        if rendered is None:
-            continue
-        if not _offered_tools_rendered(rendered, offered):
-            # The template accepted the tools but ignored them; the
-            # transcript renders them.
-            continue
-        if not _tool_content_preserved(render, candidate, offered, supports_tool_calls):
-            # The template drops tool messages or tool calls, without
-            # saying a word; the transcript keeps them.
-            continue
-        return rendered
+        # Null content only matters for assistant turns that carry tool
+        # calls: try the empty string first (GLM and most templates render
+        # it), fall back to null (DeepSeek-R1 needs it).
+        needs_null = any(message.tool_calls and not message.content for message in candidate)
+        for null_content in (False, True) if needs_null else (False,):
+            if not _verified(render, candidate, offered, supports_tool_calls, null_content):
+                continue
+            rendered = _render_with_template(
+                render, candidate, offered, supports_tool_calls, null_content
+            )
+            if rendered is not None:
+                return rendered
     return None
 
 
@@ -256,33 +255,21 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-def _offered_tools_rendered(rendered: str, tools: Sequence[ToolDefinition] | None) -> bool:
-    """Check that the offered tools made it into the prompt.
-
-    Templates that accept the ``tools`` keyword and ignore it silently
-    leave the model with no tools at all — the caller falls back to the
-    transcript, which renders them.
-    """
-    if not tools:
-        return True
-    squashed = _squash(rendered)
-    return all(_squash(tool.function.name) in squashed for tool in tools)
+_PROBE_TOOL = ToolDefinition(
+    function=ToolFunction(
+        name="qxprobetool",
+        description="Synthetic probe to detect templates that ignore the tools.",
+        parameters={"type": "object", "properties": {}},
+    )
+)
 
 
-def _tool_content_preserved(
-    render: ChatTemplate,
-    messages: Sequence[ChatTurn],
-    tools: Sequence[ToolDefinition] | None,
-    supports_tool_calls: bool,
-) -> bool:
-    """Check that a template keeps the tool exchanges of the history.
+def _mark_tool_messages(messages: Sequence[ChatTurn]) -> tuple[list[ChatTurn], list[str]]:
+    """Insert sentinel markers into the tool messages and call arguments.
 
-    The history is rendered a second time with a sentinel in every tool
-    message and in the arguments of every call; the sentinel survives every
-    argument serialization (JSON, dict literal, ``<parameter>`` blocks), so
-    its absence means the template dropped the message. This catches what
-    substring probes cannot: a tool result that is repeated verbatim by a
-    later message vouching for the one that was dropped.
+    The markers are unique, harmless strings no tool name or argument value
+    collides with, so a template that drops any of them can be detected by
+    looking for them in its output.
     """
     marked: list[ChatTurn] = []
     markers: list[str] = []
@@ -310,15 +297,46 @@ def _tool_content_preserved(
                     )
                 )
                 markers.append(marker)
-            marked.append(ChatTurn(message.role, message.content, tuple(calls), message.tool_name))
+            content = message.content
+            if content.strip():
+                marker = f"qxsentinel{index}t"
+                content = f"{content} {marker}"
+                markers.append(marker)
+            marked.append(ChatTurn(message.role, content, tuple(calls), message.tool_name))
             continue
         marked.append(message)
-    if not markers:
+    return marked, markers
+
+
+def _verified(
+    render: ChatTemplate,
+    candidate: Sequence[ChatTurn],
+    tools: Sequence[ToolDefinition] | None,
+    supports_tool_calls: bool,
+    null_content: bool,
+) -> bool:
+    """Check that the template really renders tools and tool exchanges.
+
+    The candidate is rendered once more with a synthetic probe tool and with
+    sentinel markers injected into the tool messages and call arguments.
+    The sentinels are unambiguous markers that survive every tool argument
+    serialization (JSON, dict literal, ``<parameter>`` blocks), so a
+    template that drops the offered tools or a part of the tool history is
+    detected here and falls back to the transcript.
+    """
+    if tools:
+        probe_tools: list[ToolDefinition] | None = [*tools, _PROBE_TOOL]
+    else:
+        probe_tools = None
+    marked, markers = _mark_tool_messages(candidate)
+    if probe_tools is None and not markers:
         return True
-    rendered = _render_with_template(render, marked, tools, supports_tool_calls)
+    rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
     squashed = _squash(rendered)
+    if probe_tools is not None and _PROBE_TOOL.function.name not in squashed:
+        return False
     return all(marker in squashed for marker in markers)
 
 
@@ -358,6 +376,7 @@ def _render_with_template(
     messages: Sequence[ChatTurn],
     tools: Sequence[ToolDefinition] | None = None,
     supports_tool_calls: bool = True,
+    null_content: bool = False,
 ) -> str | None:
     """Render the messages with the template.
 
@@ -368,12 +387,15 @@ def _render_with_template(
         supports_tool_calls: Whether the template renders the tool calls of
             an assistant message. When it does not, the calls are inlined
             into the content, the way the model emits them.
+        null_content: Whether a tool-calling assistant message with empty
+            content is passed ``null`` (the DeepSeek-R1 convention) instead
+            of the empty string (which GLM-style templates interpolate).
 
     Returns:
         The rendered prompt, or ``None`` when the template refuses the
         messages.
     """
-    payload = [_message_payload(message, supports_tool_calls) for message in messages]
+    payload = [_message_payload(message, supports_tool_calls, null_content) for message in messages]
     kwargs: dict[str, object] = {"tokenize": False, "add_generation_prompt": True}
     if tools:
         kwargs["tools"] = _tools_payload(tools)
@@ -405,7 +427,9 @@ def _render_with_template(
     return rendered
 
 
-def _message_payload(message: ChatTurn, supports_tool_calls: bool = True) -> dict[str, object]:
+def _message_payload(
+    message: ChatTurn, supports_tool_calls: bool = True, null_content: bool = False
+) -> dict[str, object]:
     """Render a message the way the chat templates of the models expect it.
 
     The tool calls of an assistant message are passed in the Hugging Face
@@ -428,10 +452,11 @@ def _message_payload(message: ChatTurn, supports_tool_calls: bool = True) -> dic
     if not supports_tool_calls:
         payload["content"] = _inline_tool_calls(message.content, message.tool_calls)
         return payload
-    if not message.content:
+    if not message.content and message.tool_calls and null_content:
         # The DeepSeek-R1 family renders the tool calls of an assistant
         # message only when its content is null — an empty string would
-        # render an empty turn and drop the call.
+        # render an empty turn and drop the call. Templates that render
+        # empty strings (GLM) get the empty string instead.
         payload["content"] = None
     payload["tool_calls"] = [
         {

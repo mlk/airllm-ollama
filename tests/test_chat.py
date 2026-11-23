@@ -357,13 +357,11 @@ def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assert tokenizer.renderings[0] == [
+    assert tokenizer.renderings[-1] == [
         {"role": "user", "content": "What is the weather in Paris?"},
         {
             "role": "assistant",
-            # R1-style templates render the tool calls only when the content
-            # is *none*; an empty string would render an empty turn.
-            "content": None,
+            "content": "",
             "tool_calls": [
                 {
                     "type": "function",
@@ -430,7 +428,17 @@ class FakeToolTokenizer:
         """Render the messages the way a chat template would."""
         self.renderings.append(list(messages))
         self.tools = kwargs.get("tools")
-        return "<​|im_start|>assistant\n"
+        kwargs_tools = kwargs.get("tools") or []
+        echoed = [
+            str(message.get("content", ""))
+            + "".join(str(call["function"]["arguments"]) for call in message.get("tool_calls", []))
+            for message in messages
+            if isinstance(message, dict)
+        ]
+        echoed.append(
+            "".join(str(tool.get("function", {}).get("name", "")) for tool in kwargs_tools)
+        )
+        return "<​|im_start|>assistant\n" + "\n".join(echoed)
 
 
 class ContentOnlyTokenizer:
@@ -444,7 +452,9 @@ class ContentOnlyTokenizer:
     def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
         """Render the content of the messages, like SmolLM3 does."""
         self.renderings.append(list(messages))
-        return "rendered"
+        return "\n".join(
+            str(message.get("content", "")) for message in messages if isinstance(message, dict)
+        )
 
 
 def test_a_template_that_ignores_tool_calls_gets_them_inlined() -> None:
@@ -453,7 +463,7 @@ def test_a_template_that_ignores_tool_calls_gets_them_inlined() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert "tool_calls" not in assistant
     assert (
         '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
@@ -476,7 +486,7 @@ def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
     assert assistant["content"] is None
 
@@ -516,7 +526,7 @@ def test_a_dict_template_without_tools_selects_the_default_branch() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert "tool_calls" not in assistant
     assert "<tool_call>" in assistant["content"]
 
@@ -527,7 +537,7 @@ def test_a_dict_template_with_tools_selects_the_tool_use_branch() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
     assert assistant["content"] is None
 
@@ -589,7 +599,7 @@ def test_an_assistant_message_with_text_and_tool_calls_keeps_its_content() -> No
 
     render_chat(tokenizer, messages)
 
-    assistant = tokenizer.renderings[0][0]
+    assistant = tokenizer.renderings[-1][0]
     assert assistant["content"].startswith("Checking.\n<tool_call>")
 
 
@@ -612,7 +622,7 @@ def test_a_named_template_dictionary_prefers_the_default_branch() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
@@ -634,7 +644,7 @@ def test_a_dict_template_without_tool_use_falls_back_to_default() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
 
-    assistant = tokenizer.renderings[0][1]
+    assistant = tokenizer.renderings[-1][1]
     assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
 
 

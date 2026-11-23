@@ -21,7 +21,14 @@ from airllm_ollama.engine import AirLLMEngine
 from airllm_ollama.exceptions import ModelInitializationError
 from airllm_ollama.main import create_app
 from airllm_ollama.stopping import StopGeneration
-from fakes import TOKEN_IDS, BosTokenizer, FakeFactory, FakeModel, SystemRoleTokenizer
+from fakes import (
+    TOKEN_IDS,
+    BosTokenizer,
+    EchoTokenizer,
+    FakeFactory,
+    FakeModel,
+    SystemRoleTokenizer,
+)
 
 MODEL = "test-model"
 PROMPT = "Why is the sky blue?"
@@ -706,7 +713,7 @@ def test_api_chat_returns_the_tool_calls_of_the_model(
 def test_api_chat_offers_the_tools_to_the_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
-    factory.model.tokenizer.template = "<​|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
 
     service.post(
         "/api/chat",
@@ -736,7 +743,7 @@ def test_api_chat_offers_the_tools_to_the_template(
 def test_api_chat_renders_a_tool_history_for_the_template(
     service: TestClient, factory: FakeFactory
 ) -> None:
-    factory.model.tokenizer.template = "<​|im_start|>assistant\n"
+    factory.model.tokenizer = EchoTokenizer("<​|im_start|>assistant\n")
 
     response = service.post(
         "/api/chat",
@@ -762,7 +769,7 @@ def test_api_chat_renders_a_tool_history_for_the_template(
         {"role": "user", "content": "Weather in Paris?"},
         {
             "role": "assistant",
-            "content": None,
+            "content": "",
             "tool_calls": [
                 {
                     "type": "function",

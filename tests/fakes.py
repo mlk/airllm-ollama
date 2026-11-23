@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
-from typing import cast
+from typing import Any, cast
 
 TOKEN_IDS = [11, 22, 33]
 
@@ -107,6 +107,46 @@ class FakeTokenizer:
             )
         self.template_kwargs.append(dict(kwargs))
         return self.template
+
+
+class EchoTokenizer(FakeTokenizer):
+    """Tokenizer double whose template echoes the messages and the tool names.
+
+    Used when a test needs the template to preserve the tool exchange — a
+    template that stays silent about tool calls or tool results is treated
+    as dropping them.
+    """
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+        """Render the messages by echoing their contents."""
+        if self.template is None:
+            raise ValueError("this model has no chat template")
+        if isinstance(messages, list):
+            self.renderings.append(
+                [dict(message) for message in messages if isinstance(message, dict)]
+            )
+        message_list: list[dict[str, Any]] = [
+            message
+            for message in (messages if isinstance(messages, list) else [])
+            if isinstance(message, dict)
+        ]
+        tools = kwargs.get("tools")
+        tool_list: list[dict[str, Any]] = [
+            tool for tool in (tools if isinstance(tools, list) else []) if isinstance(tool, dict)
+        ]
+        echoed = [
+            str(message.get("content", ""))
+            + "".join(
+                str(call.get("function", {}).get("arguments", ""))
+                for call in message.get("tool_calls", [])
+                if isinstance(call, dict)
+            )
+            + str(message.get("tool_name", ""))
+            for message in message_list
+        ]
+        echoed.extend(str(tool.get("function", {}).get("name", "")) for tool in tool_list)
+        self.template_kwargs.append(dict(kwargs))
+        return "<​|im_start|>assistant\n" + "\n".join(echoed)
 
 
 class BosTokenizer(FakeTokenizer):
