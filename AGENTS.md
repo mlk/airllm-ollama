@@ -458,13 +458,14 @@ src/airllm_ollama/
   offered tools or the history already carries a tool exchange. Templates
   that render only assistant `content` (SmolLM3) get the calls inlined into
   the content — detected via the `chat_template` source — so the history is
-  never silently emptied; templates that drop `tool` messages entirely
-  (Zephyr) are detected by probing the rendered prompt for the tool results
-  and fall back to the transcript. Markdown examples are not calls: fenced
-  and indented code blocks, inline code spans and HTML blocks (as parsed by
-  a CommonMark parser) and `<think>` blocks are skipped; the prompt is
-  decoded only up to the generated tokens, so a tool history in the prompt
-  is never re-executed.
+  never silently emptied; templates that drop tool messages or ignore the
+  offered tools are detected by rendering the history a second time with
+  sentinel markers and fall back to the transcript. A message may carry text
+  and tool calls — the text stays in `content`. Markdown examples are not
+  calls: fenced and indented code blocks, inline code spans and HTML blocks
+  (as parsed by a CommonMark parser) and `<think>` blocks are skipped; the
+  prompt is decoded only up to the generated tokens, so a tool history in
+  the prompt is never re-executed.
 * The parsing happens in the non-streaming path only. Streaming (#103) and
   the OpenAI wire format (`/v1/chat/completions`, #104) are separate tickets.
 * The `tools` capability is opt-in (`AIRLLM_OLLAMA_CAPABILITIES`), like

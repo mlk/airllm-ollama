@@ -504,3 +504,43 @@ def test_a_crlf_fence_is_recognized() -> None:
 
     assert text == raw
     assert calls == []
+
+
+def test_a_think_block_with_a_quoted_closing_delimiter_is_not_executable() -> None:
+    raw = (
+        "<think>Example: `</think>`. "
+        'Never call <tool_call>{"name": "delete_file", "arguments": {}}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_an_unmatched_backtick_in_one_paragraph_does_not_hide_another() -> None:
+    raw = (
+        'unmatched `\n\nExample: `<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>`.'
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_an_html_comment_example_is_not_a_call() -> None:
+    raw = 'Example: <!-- <tool_call>{"name": "delete_file", "arguments": {}}</tool_call> -->'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_code_tag_example_is_not_a_call() -> None:
+    raw = 'Example: <code><tool_call>{"name": "delete_file", "arguments": {}}</tool_call></code>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []

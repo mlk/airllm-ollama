@@ -731,3 +731,62 @@ def test_a_tool_result_matching_the_arguments_still_falls_back() -> None:
     rendered = render_chat(EchoTemplate(), messages)
 
     assert "Tool[get_weather]: Paris" in rendered.text
+
+
+def test_a_template_that_ignores_the_offered_tools_falls_back_to_the_transcript() -> None:
+    class IgnoringTemplateTokenizer:
+        """Render the messages but not the tools."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the messages, ignoring the tools keyword."""
+            self.renderings.append(list(messages))
+            return "<|im_start|>assistant\n"
+
+    rendered = render_chat(IgnoringTemplateTokenizer(), [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert "Tools: [" in rendered.text
+    assert "get_weather" in rendered.text
+
+
+def test_a_template_that_concatenates_string_arguments_is_supported() -> None:
+    """Templates like DeepSeek-R1 that stringify tool arguments keep their format."""
+
+    class StringArgumentsTokenizer:
+        """Tokenizer double that concatenates arguments into the output."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render, requiring arguments to be a string."""
+            self.renderings.append(list(messages))
+            parts = []
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    arguments = call["function"]["arguments"]
+                    if not isinstance(arguments, str):
+                        raise TypeError("arguments must be a string")
+                    parts.append(f"<call>{call['function']['name']}:{arguments}</call>")
+            return "|".join(parts) or "empty"
+
+    messages = [
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+    ]
+
+    rendered = render_chat(StringArgumentsTokenizer(), messages, TOOLS)
+
+    assert "get_weather" in rendered.text
+    assert '{"city": "Paris"}' in rendered.text

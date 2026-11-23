@@ -656,9 +656,10 @@ How the history is rendered for the model:
   convention of the tool-calling models (Hermes, Qwen, ...). `arguments` may
   be a JSON object or a JSON-encoded string. Parsing happens when the request
   offers tools or the history already carries a tool exchange. When at least
-  one valid call is found, it is reported in `tool_calls` and `content` is
-  empty (a malformed call sitting next to a valid one is kept in `content` so
-  it is not silently dropped); text that is not a valid call is left in
+  one valid call is found, it is reported in `tool_calls`; the text around it
+  is kept in `content` (empty when the model went straight to the call), and
+  a malformed call sitting next to a valid one is kept in `content` so it is
+  never silently dropped. A call that is not a call at all is left in
   `content` untouched.
 
 Notes and limits:

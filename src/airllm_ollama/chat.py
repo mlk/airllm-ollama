@@ -8,11 +8,11 @@ transcript instead.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
-from airllm_ollama.schemas.tools import ToolCall, ToolDefinition
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition
 
 # The system message is merged into the first user turn with this separator —
 # the same one the plain join of a model without a template uses.
@@ -232,85 +232,125 @@ def apply_chat_template(
     supports_tool_calls = _template_supports_tool_calls(
         getattr(tokenizer, "chat_template", None), offered is not None
     )
-    rendered = _render_with_template(render, messages, offered, supports_tool_calls)
-    if rendered is not None and _keeps_tool_messages(rendered, messages):
-        return rendered
-    merged = _merge_system_message(messages)
-    if merged is None:
-        return None
-    rendered = _render_with_template(render, merged, offered, supports_tool_calls)
-    if rendered is not None and _keeps_tool_messages(rendered, merged):
+    candidates = (messages, _merge_system_message(messages))
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        rendered = _render_with_template(render, candidate, offered, supports_tool_calls)
+        if rendered is None:
+            continue
+        if not _offered_tools_rendered(rendered, offered):
+            # The template accepted the tools but ignored them; the
+            # transcript renders them.
+            continue
+        if not _tool_content_preserved(render, candidate, offered, supports_tool_calls):
+            # The template drops tool messages or tool calls, without
+            # saying a word; the transcript keeps them.
+            continue
         return rendered
     return None
-
-
-def _keeps_tool_messages(rendered: str, messages: Sequence[ChatTurn]) -> bool:
-    """Check that the rendered prompt still holds the tool exchanges.
-
-    Some templates render only the roles they know and silently drop the
-    rest — Zephyr's renders system/user/assistant and nothing else, so a
-    tool result would vanish from the prompt without any error. Every tool
-    result is probed in full and every tool call by name and by arguments;
-    a probe that is missing means the template dropped it. The probes are
-    matched in order, so one part of the history cannot vouch for another.
-    """
-    squashed = _squash(rendered)
-    position = 0
-    for message in messages:
-        if message.role == "tool" and message.content.strip():
-            probe = _squash(message.content)
-            index = squashed.find(probe, position)
-            if index == -1:
-                return False
-            position = index + len(probe)
-        for call in message.tool_calls:
-            name = call.function.name
-            index = squashed.find(name, position)
-            if index == -1:
-                return False
-            position = index + len(name)
-            end = _arguments_end(squashed, call.function.arguments, position)
-            if end is None:
-                return False
-            position = end
-    return True
-
-
-def _arguments_end(squashed: str, arguments: Mapping[str, object], start: int) -> int | None:
-    """Locate the arguments of a call in the rendered prompt.
-
-    Templates print the arguments in different ways — JSON (``tojson``), a
-    Python dict literal (raw print), a ``<parameter=name>`` block per
-    argument (Qwen3-Coder) — so several encodings are tried. Returns the
-    offset after the match, or ``None`` when they are absent.
-    """
-    variants = [
-        json.dumps(arguments, ensure_ascii=False),
-        json.dumps(arguments, ensure_ascii=False, sort_keys=True),
-        str(arguments),
-        str(dict(sorted(arguments.items()))),
-        *(f"<parameter={key}>\n{value}\n</parameter>" for key, value in arguments.items()),
-    ]
-    for variant in variants:
-        index = squashed.find(_squash(variant), start)
-        if index != -1:
-            return index + len(_squash(variant))
-    values = [_squash(str(value)) for value in arguments.values() if _squash(str(value))]
-    if not values:
-        # No argument carries text to probe for (e.g. an empty object).
-        return start
-    position = start
-    for value in values:
-        index = squashed.find(value, position)
-        if index == -1:
-            return None
-        position = index + len(value)
-    return position
 
 
 def _squash(text: str) -> str:
     """Collapse all runs of whitespace, so formatting cannot hide a probe."""
     return " ".join(text.split())
+
+
+def _offered_tools_rendered(rendered: str, tools: Sequence[ToolDefinition] | None) -> bool:
+    """Check that the offered tools made it into the prompt.
+
+    Templates that accept the ``tools`` keyword and ignore it silently
+    leave the model with no tools at all — the caller falls back to the
+    transcript, which renders them.
+    """
+    if not tools:
+        return True
+    squashed = _squash(rendered)
+    return all(_squash(tool.function.name) in squashed for tool in tools)
+
+
+def _tool_content_preserved(
+    render: ChatTemplate,
+    messages: Sequence[ChatTurn],
+    tools: Sequence[ToolDefinition] | None,
+    supports_tool_calls: bool,
+) -> bool:
+    """Check that a template keeps the tool exchanges of the history.
+
+    The history is rendered a second time with a sentinel in every tool
+    message and in the arguments of every call; the sentinel survives every
+    argument serialization (JSON, dict literal, ``<parameter>`` blocks), so
+    its absence means the template dropped the message. This catches what
+    substring probes cannot: a tool result that is repeated verbatim by a
+    later message vouching for the one that was dropped.
+    """
+    marked: list[ChatTurn] = []
+    markers: list[str] = []
+    for index, message in enumerate(messages):
+        if message.role == "tool" and message.content.strip():
+            marker = f"qxsentinel{index}q"
+            marked.append(
+                ChatTurn(
+                    "tool", f"{marker} {message.content}", message.tool_calls, message.tool_name
+                )
+            )
+            markers.append(marker)
+            continue
+        if message.tool_calls:
+            calls = []
+            for ordinal, call in enumerate(message.tool_calls):
+                marker = f"qxsentinel{index}x{ordinal}q"
+                arguments = {**call.function.arguments, "qxsentinel": marker}
+                calls.append(
+                    ToolCall(
+                        function=ToolCallFunction(
+                            name=call.function.name,
+                            arguments=arguments,
+                        )
+                    )
+                )
+                markers.append(marker)
+            marked.append(ChatTurn(message.role, message.content, tuple(calls), message.tool_name))
+            continue
+        marked.append(message)
+    if not markers:
+        return True
+    rendered = _render_with_template(render, marked, tools, supports_tool_calls)
+    if rendered is None:
+        return False
+    squashed = _squash(rendered)
+    return all(marker in squashed for marker in markers)
+
+
+def _render_with_string_arguments(
+    template: ChatTemplate, payload: list[dict[str, object]], kwargs: dict[str, object]
+) -> str | None:
+    """Retry a rendering with the tool-call arguments as JSON strings."""
+    converted: list[dict[str, object]] = []
+    for message in payload:
+        calls = message.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            converted_calls: list[dict[str, object]] = []
+            for raw_call in cast("list[dict[str, Any]]", calls):
+                function = cast("dict[str, Any]", raw_call.get("function", {}))
+                converted_calls.append(
+                    {
+                        **raw_call,
+                        "function": {
+                            **function,
+                            "arguments": json.dumps(function.get("arguments", {})),
+                        },
+                    }
+                )
+            message = {**message, "tool_calls": converted_calls}
+        converted.append(message)
+    try:
+        rendered: object = template(converted, **kwargs)
+    except Exception:
+        return None
+    if not isinstance(rendered, str) or not rendered.strip():
+        return None
+    return rendered
 
 
 def _render_with_template(
@@ -337,12 +377,29 @@ def _render_with_template(
     kwargs: dict[str, object] = {"tokenize": False, "add_generation_prompt": True}
     if tools:
         kwargs["tools"] = _tools_payload(tools)
+    tool_calls = [
+        call
+        for message in payload
+        for call in cast("list[dict[str, Any]]", message.get("tool_calls") or [])
+    ]
+    has_dict_arguments = any(
+        isinstance(cast("dict[str, Any]", call.get("function", {})).get("arguments"), dict)
+        for call in tool_calls
+    )
+    rendered: object
     try:
         rendered = template(payload, **kwargs)
     except Exception:
-        # The template may reject any message (unknown role, missing tool
-        # support, ...); the caller decides what to do instead.
-        return None
+        if not has_dict_arguments:
+            # The template may reject any message (unknown role, missing tool
+            # support, ...); the caller decides what to do instead.
+            return None
+        # Some templates (DeepSeek-R1) concatenate the arguments as a string
+        # and fail on a dict — render those with the arguments encoded as a
+        # JSON string, the way the model was trained to see them.
+        rendered = _render_with_string_arguments(template, payload, kwargs)
+        if rendered is None:
+            return None
     if not isinstance(rendered, str) or not rendered.strip():
         return None
     return rendered

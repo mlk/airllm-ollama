@@ -32,6 +32,14 @@ _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
+# Inline HTML that is all example text — comments and raw-text elements.
+_HTML_SPAN = re.compile(
+    r"<!--.*?-->|<(script|style|pre|code|kbd|samp|xmp)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
+
 
 def _line_starts(text: str) -> list[int]:
     """Return the offset at which each line starts (all line-ending styles)."""
@@ -54,29 +62,40 @@ def _markdown_regions(text: str) -> list[tuple[int, int]]:
     for token in tokens:
         if token.map is not None and token.type in ("fence", "code_block", "html_block"):
             regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
+    regions.extend(match.span() for match in _HTML_SPAN.finditer(text))
     return regions
 
 
-def _think_regions(text: str) -> list[tuple[int, int]]:
+def _intersects(regions: list[tuple[int, int]], start: int, end: int) -> bool:
+    return any(start < region_end and end > region_start for region_start, region_end in regions)
+
+
+def _think_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Return the spans of the reasoning blocks (``<think>...</think>``).
 
     The reasoning of the model is not its answer: nothing inside it is a
-    call. An unterminated block swallows the rest of the text (fail closed).
+    call. Tags inside code regions are literal text, not delimiters. An
+    unterminated block swallows the rest of the text (fail closed).
     """
     regions: list[tuple[int, int]] = []
-    lowered = text.lower()
-    cursor = 0
-    while True:
-        start = lowered.find("<think>", cursor)
-        if start == -1:
-            break
-        end = lowered.find("</think>", start)
-        if end == -1:
-            regions.append((start, len(text)))
-            return regions
-        end += len("</think>")
-        regions.append((start, end))
-        cursor = end
+    start: int | None = None
+    depth = 0
+    for match in _THINK_TAG.finditer(text):
+        if _intersects(blocked, match.start(), match.end()):
+            continue
+        closing = match.group(1) == "/"
+        if not closing:
+            if depth == 0:
+                start = match.start()
+            depth += 1
+            continue
+        if depth == 0:
+            continue
+        depth -= 1
+        if depth == 0 and start is not None:
+            regions.append((start, match.end()))
+    if depth > 0 and start is not None:
+        regions.append((start, len(text)))
     return regions
 
 
@@ -97,12 +116,12 @@ def _run_length(text: str, start: int, char: str) -> int:
     return end - start
 
 
-def _find_backtick_run(text: str, run: int, start: int) -> int:
+def _find_backtick_run(text: str, run: int, start: int, end: int) -> int:
     """Return the offset of a run of exactly ``run`` backticks, or ``-1``."""
     position = start
     needle = "`" * run
     while True:
-        found = text.find(needle, position)
+        found = text.find(needle, position, end)
         if found == -1:
             return -1
         before = text[found - 1] if found > 0 else ""
@@ -112,37 +131,56 @@ def _find_backtick_run(text: str, run: int, start: int) -> int:
         position = found + run
 
 
+def _segments(text: str) -> list[tuple[int, int]]:
+    """Split the text into paragraphs (delimited by blank lines).
+
+    Code spans cannot span a blank line, so each segment is scanned on its
+    own — a stray backtick in one paragraph can never swallow the markup of
+    the next one, as CommonMark treats it as a literal backtick.
+    """
+    segments: list[tuple[int, int]] = []
+    start = 0
+    for match in re.finditer(r"\n[ \t]*(?:\n|$)", text):
+        segments.append((start, match.start() + 1))
+        start = match.end()
+    if start < len(text):
+        segments.append((start, len(text)))
+    return segments
+
+
 def _inline_code_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Return the spans of the inline code spans.
 
     CommonMark: a span opens with a run of backticks and closes at a run of
-    exactly the same length, anywhere in the text (a code span may contain
-    line breaks). Spans do not open inside a block region.
+    exactly the same length, anywhere in the same paragraph (a span may span
+    line breaks, but never a paragraph boundary). Spans do not open inside
+    a block region.
     """
     regions: list[tuple[int, int]] = []
     blocked_index = 0
-    position = 0
-    while position < len(text):
-        while blocked_index < len(blocked) and blocked[blocked_index][1] <= position:
-            blocked_index += 1
-        if blocked_index < len(blocked) and blocked[blocked_index][0] <= position:
-            position = blocked[blocked_index][1]
-            continue
-        char = text[position]
-        if char == "\\":
-            # An escaped character is never the start of a code span.
-            position += 2
-            continue
-        if char == "`":
-            run = _run_length(text, position, "`")
-            closing = _find_backtick_run(text, run, position + run)
-            if closing != -1:
-                regions.append((position, closing + run))
-                position = closing + run
+    for segment_start, segment_end in _segments(text):
+        position = segment_start
+        while position < segment_end:
+            while blocked_index < len(blocked) and blocked[blocked_index][1] <= position:
+                blocked_index += 1
+            if blocked_index < len(blocked) and blocked[blocked_index][0] <= position:
+                position = min(blocked[blocked_index][1], segment_end)
                 continue
-            position += run
-            continue
-        position += 1
+            char = text[position]
+            if char == "\\":
+                # An escaped character is never the start of a code span.
+                position += 2
+                continue
+            if char == "`":
+                run = _run_length(text, position, "`")
+                closing = _find_backtick_run(text, run, position + run, segment_end)
+                if closing != -1:
+                    regions.append((position, closing + run))
+                    position = closing + run
+                    continue
+                position += run
+                continue
+            position += 1
     return regions
 
 
@@ -155,9 +193,11 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
     blockquotes, headings, list items and nested fences all follow the same
     rules as a rendered document.
     """
-    blocks = _merge_regions(_markdown_regions(text) + _think_regions(text))
+    blocks = _merge_regions(_markdown_regions(text))
     inline = _inline_code_regions(text, blocks)
-    return _merge_regions(blocks + inline)
+    blocked = _merge_regions(blocks + inline)
+    thinks = _think_regions(text, blocked)
+    return _merge_regions(blocked + thinks)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:

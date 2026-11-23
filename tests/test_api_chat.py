@@ -317,7 +317,7 @@ def test_chat_returns_the_tool_calls_of_the_model(client: TestClient, engine: An
     assert response.status_code == 200
     payload = response.json()
     assert payload["message"]["role"] == "assistant"
-    assert payload["message"]["content"] == ""
+    assert payload["message"]["content"] == "It is sunny."
     assert payload["message"]["tool_calls"] == [
         {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
     ]

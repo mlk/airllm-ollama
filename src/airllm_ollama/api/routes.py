@@ -228,11 +228,9 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     # to answer in that format.
     parse_tools = bool(request.tools) or has_tool_material(messages)
     content, tool_calls = extract_tool_calls(text) if parse_tools else (text, [])
-    if tool_calls:
-        # A message that calls a tool carries no content; a malformed block
-        # the parser could not extract is kept so it is not silently lost.
-        leftover = content.strip()
-        content = leftover if ("<tool_call" in leftover or "</tool_call" in leftover) else ""
+    # A message may carry both text and tool calls (Ollama does the same):
+    # whatever the model wrote stays in the content
+    # (empty when it went straight to the call).
     done_reason = generation_done_reason(result, options)
 
     settings = get_settings()
