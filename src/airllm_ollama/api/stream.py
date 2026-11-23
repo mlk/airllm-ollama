@@ -15,10 +15,12 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
+from airllm_ollama.chat import ChatTurn
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import AirLLMEngine, GenerationResult, StreamChunk
 from airllm_ollama.exceptions import GenerationError
 from airllm_ollama.options import StopSequenceFilter, done_reason
+from airllm_ollama.schemas.tools import ToolDefinition
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
 SSE_MEDIA_TYPE = "text/event-stream"
@@ -100,21 +102,23 @@ def generate_events(
 
 def chat_events(
     engine: AirLLMEngine,
-    messages: list[tuple[str, str]],
+    messages: list[ChatTurn],
     *,
     model: str,
     options: dict[str, object],
     stop: list[str] | None = None,
+    tools: list[ToolDefinition] | None = None,
     abort: threading.Event | None = None,
 ) -> Iterator[str]:
     """Yield the streaming events of a chat answer.
 
     Args:
         engine: The engine that runs the generation.
-        messages: The chat history as ``(role, content)`` pairs.
+        messages: The chat history.
         model: The model the client asked for.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
+        tools: The tools offered to the model, if any.
         abort: The event that stops the generation when the client is gone.
 
     Yields:
@@ -127,6 +131,7 @@ def chat_events(
             messages,
             model=model,
             stop=stop or (),
+            tools=tools,
             abort=abort,
             **options,
         ),

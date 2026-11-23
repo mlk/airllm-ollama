@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from airllm_ollama.api.disconnect import stream_events
+from airllm_ollama.chat import ChatTurn
 from airllm_ollama.config import get_settings
 from airllm_ollama.decision import (
     CHOICE,
@@ -391,7 +392,9 @@ async def chat_completions(
             stop=stop,
         )
     )
-    messages = [(message.role, message.content) for message in request.messages]
+    messages = [
+        ChatTurn(role=message.role, content=message.content) for message in request.messages
+    ]
     engine = get_engine()
     keep_alive = parse_keep_alive(settings.keep_alive)
     if request.stream:
@@ -434,9 +437,9 @@ async def chat_completions(
 
 def _chat_events(
     engine: AirLLMEngine,
-    messages: list[tuple[str, str]],
+    messages: list[ChatTurn],
     model: str,
-    options: dict[str, object],
+    options: dict[str, Any],
     stop: list[str],
     keep_alive: float | None = None,
     abort: threading.Event | None = None,
@@ -445,7 +448,7 @@ def _chat_events(
 
     Args:
         engine: The engine that runs the generation.
-        messages: The chat history as ``(role, content)`` pairs.
+        messages: The chat history.
         model: The model the client asked for.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
@@ -465,9 +468,9 @@ def _chat_events(
 
 def _completion_events(
     engine: AirLLMEngine,
-    messages: list[tuple[str, str]],
+    messages: list[ChatTurn],
     model: str,
-    options: dict[str, object],
+    options: dict[str, Any],
     stop: list[str],
     abort: threading.Event | None = None,
 ) -> Iterator[str]:
@@ -475,7 +478,7 @@ def _completion_events(
 
     Args:
         engine: The engine that runs the generation.
-        messages: The chat history as ``(role, content)`` pairs.
+        messages: The chat history.
         model: The model the client asked for.
         options: The translated generation options.
         stop: The stop sequences requested by the client.
@@ -707,7 +710,7 @@ def _text_events(
     engine: AirLLMEngine,
     prompts: Sequence[str],
     model: str,
-    options: dict[str, object],
+    options: dict[str, Any],
     stop: list[str],
     keep_alive: float | None = None,
     abort: threading.Event | None = None,
@@ -752,7 +755,7 @@ def _text_prompt_events(
     prompt: str,
     index: int,
     stream: _TextStream,
-    options: dict[str, object],
+    options: dict[str, Any],
     stop: list[str],
     abort: threading.Event | None = None,
 ) -> Iterator[str]:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from airllm_ollama.schemas.generate import GenerateOptions
 
@@ -20,7 +20,7 @@ DURATION_PATTERN = re.compile(r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[smh]?)\
 UNIT_SECONDS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
 
-def map_options(options: GenerateOptions | None) -> dict[str, object]:
+def map_options(options: GenerateOptions | None) -> dict[str, Any]:
     """Translate Ollama's options into keyword arguments for the engine.
 
     Args:
@@ -32,7 +32,7 @@ def map_options(options: GenerateOptions | None) -> dict[str, object]:
     if options is None:
         return {}
 
-    mapped: dict[str, object] = {}
+    mapped: dict[str, Any] = {}
     sampling = False
     if options.temperature is not None:
         mapped["temperature"] = options.temperature

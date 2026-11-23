@@ -19,7 +19,7 @@ from typing import cast
 import pytest
 from pytest_mock import MockerFixture
 
-from airllm_ollama.chat import render_transcript
+from airllm_ollama.chat import ChatTurn, render_transcript
 from airllm_ollama.config import Settings
 from airllm_ollama.engine import (
     AirLLMEngine,
@@ -460,7 +460,7 @@ def test_generate_chat_renders_the_history_and_generates() -> None:
     factory = RecordingFactory()
     engine = AirLLMEngine(Settings(), model_factory=factory)
 
-    result = engine.generate_chat([("user", "Hello")])
+    result = engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert factory.model.tokenizer.prompts == ["User: Hello\n\nAssistant:"]
     assert result.text == f"decoded:{TOKEN_IDS}"
@@ -479,7 +479,7 @@ def test_generate_chat_uses_the_chat_template() -> None:
     model.tokenizer = TemplateTokenizer()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert model.tokenizer.prompts[0].startswith("templated:")
 
@@ -489,7 +489,7 @@ def test_generate_chat_rejects_a_mismatching_model() -> None:
     engine = AirLLMEngine(Settings(model_name="my-model"), model_factory=factory)
 
     with pytest.raises(ModelMismatchError):
-        engine.generate_chat([("user", "Hello")], model="other-model")
+        engine.generate_chat([ChatTurn("user", "Hello")], model="other-model")
 
     assert factory.calls == []
 
@@ -609,7 +609,7 @@ def test_a_template_that_refuses_the_system_role_keeps_the_model_format() -> Non
     model.tokenizer.template = "<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("system", "Be terse."), ("user", "Hello")])
+    engine.generate_chat([ChatTurn("system", "Be terse."), ChatTurn("user", "Hello")])
 
     assert model.tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nHello"}]]
     assert model.tokenizer.prompts == ["<|im_start|>assistant\n"]
@@ -665,7 +665,7 @@ def test_a_templated_chat_is_tokenized_without_the_special_tokens() -> None:
     model.tokenizer.template = f"{BOS_TEXT}<|im_start|>assistant\n"
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
@@ -677,9 +677,9 @@ def test_the_transcript_fallback_is_tokenized_with_the_special_tokens() -> None:
     model.tokenizer = BosTokenizer()
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    engine.generate_chat([("user", "Hello")])
+    engine.generate_chat([ChatTurn("user", "Hello")])
 
-    assert model.tokenizer.prompts == [render_transcript([("user", "Hello")])]
+    assert model.tokenizer.prompts == [render_transcript([ChatTurn("user", "Hello")])]
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is True
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]
 
@@ -692,7 +692,7 @@ def test_a_templated_stream_is_tokenized_without_the_special_tokens() -> None:
     model.chunks = ["blue ", "sky"]
     engine = AirLLMEngine(Settings(), model_factory=RecordingFactory(model))
 
-    list(engine.generate_chat_stream([("user", "Hello")]))
+    list(engine.generate_chat_stream([ChatTurn("user", "Hello")]))
 
     assert model.tokenizer.tokenizations[0]["add_special_tokens"] is False
     assert model.calls[0][0][0] == [BOS, *TOKEN_IDS]

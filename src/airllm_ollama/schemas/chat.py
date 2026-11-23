@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from airllm_ollama.schemas.generate import GenerateOptions
+from airllm_ollama.schemas.tools import ToolCall, ToolDefinition
 
 
 class ChatMessage(BaseModel):
@@ -14,10 +15,16 @@ class ChatMessage(BaseModel):
     ``assistant`` are the common ones, but a chat template may use others.
     Roles that the template does not know make the rendering fall back to the
     plain transcript.
+
+    An assistant message that calls tools carries them in ``tool_calls``; its
+    ``content`` is empty then. A ``tool`` role message carries the result of a
+    call and names the tool it comes from in ``tool_name``.
     """
 
     role: str
-    content: str
+    content: str = ""
+    tool_calls: list[ToolCall] | None = None
+    tool_name: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -29,6 +36,7 @@ class ChatRequest(BaseModel):
     format: str | None = None
     options: GenerateOptions | None = None
     keep_alive: str | None = None
+    tools: list[ToolDefinition] | None = None
 
 
 class ChatResponse(BaseModel):

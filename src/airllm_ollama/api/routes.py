@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 
 from airllm_ollama.api.disconnect import stream_events
 from airllm_ollama.api.stream import chat_events, generate_events, media_type
+from airllm_ollama.chat import ChatTurn
 from airllm_ollama.config import Settings, get_settings
 from airllm_ollama.engine import AirLLMEngine, get_engine, model_names_match
 from airllm_ollama.exceptions import ModelMismatchError
@@ -32,6 +33,7 @@ from airllm_ollama.schemas.ps import PsResponse, RunningModel
 from airllm_ollama.schemas.show import ShowRequest, ShowResponse
 from airllm_ollama.schemas.tags import ModelDetails, ModelInfo, TagsResponse
 from airllm_ollama.schemas.version import VersionResponse
+from airllm_ollama.tool_calls import extract_tool_calls
 
 api_router = APIRouter()
 
@@ -178,6 +180,7 @@ def _stream_response(
 @api_router.post(
     "/api/chat",
     response_model=ChatResponse,
+    response_model_exclude_none=True,
     responses=GENERATION_ERRORS,
     tags=["ollama"],
 )
@@ -189,9 +192,13 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     answer is streamed as newline delimited JSON (or Server-Sent Events),
     otherwise it is returned as a single JSON object with ``done`` set to
     ``true``.
+
+    When the request offers tools and the model answers with a
+    ``<tool_call>`` block, the call is reported in ``message.tool_calls``
+    instead of in the content.
     """
     engine = get_engine()
-    messages = [(message.role, message.content) for message in request.messages]
+    messages = [_as_turn(message) for message in request.messages]
     options = map_options(request.options)
     stop = request.options.stop if request.options else None
     if request.stream:
@@ -205,14 +212,18 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
                 model=request.model,
                 options=options,
                 stop=stop,
+                tools=request.tools,
                 abort=abort,
             ),
             engine,
             request.keep_alive,
             abort,
         )
-    result = engine.generate_chat(messages, model=request.model, stop=stop or (), **options)
+    result = engine.generate_chat(
+        messages, model=request.model, stop=stop or (), tools=request.tools, **options
+    )
     text = apply_stop_sequences(result.text, stop)
+    content, tool_calls = extract_tool_calls(text) if request.tools else (text, [])
 
     settings = get_settings()
     keep_alive = parse_keep_alive(
@@ -224,7 +235,11 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     return ChatResponse(
         model=request.model,
         created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        message=ChatMessage(role="assistant", content=text),
+        message=ChatMessage(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls or None,
+        ),
         done=True,
         done_reason=generation_done_reason(result, options),
         total_duration=result.total_duration_ns,
@@ -509,6 +524,16 @@ async def delete() -> JSONResponse:
     models.
     """
     return _not_implemented(_model_management_error("delete"))
+
+
+def _as_turn(message: ChatMessage) -> ChatTurn:
+    """Convert a request message into the message the engine renders."""
+    return ChatTurn(
+        role=message.role,
+        content=message.content,
+        tool_calls=tuple(message.tool_calls or ()),
+        tool_name=message.tool_name,
+    )
 
 
 def _timestamp(moment: datetime) -> str:

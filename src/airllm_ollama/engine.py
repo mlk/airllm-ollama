@@ -28,6 +28,7 @@ from airllm_ollama.exceptions import (
     ModelMismatchError,
 )
 from airllm_ollama.model_metadata import has_own_output_head
+from airllm_ollama.schemas.tools import ToolDefinition
 from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
 
@@ -510,19 +511,24 @@ class AirLLMEngine:
         *,
         model: str | None = None,
         stop: Sequence[str] = (),
+        tools: Sequence[ToolDefinition] | None = None,
         **kwargs: object,
     ) -> GenerationResult:
         """Render a chat history and generate the assistant's answer.
 
         The history is rendered with the chat template of the model; models
-        without a template get a plain transcript.
+        without a template get a plain transcript. The tools of the request
+        are rendered into the prompt as well — the model calls them by
+        emitting a tool call block.
 
         Args:
-            messages: The chat history as ``(role, content)`` pairs.
+            messages: The chat history.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
                 one of them appears. It is never forwarded to AirLLM.
+            tools: The tools offered to the model, as advertised by its chat
+                template. They are never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Returns:
@@ -537,7 +543,7 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages)
+            rendered = render_chat(loaded_model.tokenizer, messages, tools)
             return self._run_prompt(loaded_model, rendered, started, stop=stop, **kwargs)
 
     def _run_prompt(
@@ -621,12 +627,13 @@ class AirLLMEngine:
         model: str | None = None,
         stop: Sequence[str] = (),
         abort: threading.Event | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         **kwargs: object,
     ) -> Generator[StreamChunk, None, None]:
         """Render a chat history and stream the assistant's answer.
 
         Args:
-            messages: The chat history as ``(role, content)`` pairs.
+            messages: The chat history.
             model: The model the client asked for. It is validated against the
                 served model and never forwarded to AirLLM.
             stop: The stop sequences of the request. The generation ends when
@@ -634,6 +641,8 @@ class AirLLMEngine:
             abort: The event that is set when the client is gone. The
                 generation stops at the next token. It is never forwarded to
                 AirLLM.
+            tools: The tools offered to the model, as advertised by its chat
+                template. They are never forwarded to AirLLM.
             **kwargs: Generation options forwarded to AirLLM.
 
         Yields:
@@ -648,7 +657,7 @@ class AirLLMEngine:
         with self._generation_lock:
             started = time.perf_counter_ns()
             loaded_model = self.load()
-            rendered = render_chat(loaded_model.tokenizer, messages)
+            rendered = render_chat(loaded_model.tokenizer, messages, tools)
             yield from self._stream(
                 loaded_model, rendered, started, stop=stop, abort=abort, **kwargs
             )

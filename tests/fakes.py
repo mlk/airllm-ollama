@@ -69,7 +69,8 @@ class FakeTokenizer:
         self.tokenizations: list[dict[str, object]] = []
         self.decoded: list[object] = []
         self.template = template
-        self.renderings: list[list[dict[str, str]]] = []
+        self.renderings: list[list[dict[str, object]]] = []
+        self.template_kwargs: list[dict[str, object]] = []
 
     def __call__(self, text: str, **kwargs: object) -> FakeInputs:
         """Return fake token ids for ``text``."""
@@ -101,15 +102,9 @@ class FakeTokenizer:
             raise ValueError("this model has no chat template")
         if isinstance(messages, list):
             self.renderings.append(
-                [
-                    {
-                        "role": str(message.get("role", "")),
-                        "content": str(message.get("content", "")),
-                    }
-                    for message in messages
-                    if isinstance(message, dict)
-                ]
+                [dict(message) for message in messages if isinstance(message, dict)]
             )
+        self.template_kwargs.append(dict(kwargs))
         return self.template
 
 

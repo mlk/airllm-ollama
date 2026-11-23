@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
+from airllm_ollama.chat import ChatTurn
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import GenerationResult, StreamChunk
 from airllm_ollama.exceptions import (
@@ -16,6 +17,7 @@ from airllm_ollama.exceptions import (
     ModelInitializationError,
     ModelMismatchError,
 )
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition, ToolFunction
 from fakes import FailingStream
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
@@ -72,7 +74,10 @@ def test_chat_delegates_the_history_to_the_engine(client: TestClient, engine: An
     client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES})
 
     engine.return_value.generate_chat.assert_called_once_with(
-        [("system", "Be brief."), ("user", "Why is the sky blue?")], model=MODEL, stop=()
+        [ChatTurn("system", "Be brief."), ChatTurn("user", "Why is the sky blue?")],
+        model=MODEL,
+        stop=(),
+        tools=None,
     )
 
 
@@ -173,8 +178,18 @@ def test_chat_requires_a_model(client: TestClient, engine: Any) -> None:
     assert "error" in response.json()
 
 
+def test_chat_accepts_a_message_without_content(client: TestClient, engine: Any) -> None:
+    """Assistant messages carrying tool calls may omit the content."""
+    response = client.post(
+        "/api/chat",
+        json={"model": MODEL, "messages": [{"role": "assistant", "tool_calls": []}]},
+    )
+
+    assert response.status_code == 200
+
+
 def test_chat_rejects_an_invalid_message(client: TestClient, engine: Any) -> None:
-    response = client.post("/api/chat", json={"model": MODEL, "messages": [{"role": "user"}]})
+    response = client.post("/api/chat", json={"model": MODEL, "messages": [{"content": "hi"}]})
 
     assert response.status_code == 400
     assert "error" in response.json()
@@ -264,3 +279,122 @@ def test_openapi_documents_the_chat_endpoint(client: TestClient) -> None:
     response = client.get("/openapi.json")
 
     assert "/api/chat" in response.json()["paths"]
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather of a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+TOOL_CALL_TEXT = (
+    'It is sunny. <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+)
+
+
+def test_chat_returns_the_tool_calls_of_the_model(client: TestClient, engine: Any) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text=TOOL_CALL_TEXT,
+        prompt_tokens=7,
+        generated_tokens=3,
+        total_duration_ns=4_000,
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"model": MODEL, "messages": MESSAGES, "tools": TOOLS},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["content"] == "It is sunny."
+    assert payload["message"]["tool_calls"] == [
+        {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+    ]
+    assert payload["done_reason"] == "stop"
+
+
+def test_chat_omits_the_tool_calls_when_the_model_does_not_call_a_tool(
+    client: TestClient, engine: Any
+) -> None:
+    response = client.post(
+        "/api/chat",
+        json={"model": MODEL, "messages": MESSAGES, "tools": TOOLS},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "tool_calls" not in payload["message"]
+    assert payload["message"]["content"] == "the sky is blue"
+
+
+def test_chat_passes_the_tools_to_the_engine(client: TestClient, engine: Any) -> None:
+    client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES, "tools": TOOLS})
+
+    _, kwargs = engine.return_value.generate_chat.call_args
+    assert kwargs["tools"] == [
+        ToolDefinition(
+            function=ToolFunction(
+                name="get_weather",
+                description="Get the weather of a city.",
+                parameters={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            )
+        )
+    ]
+
+
+def test_chat_does_not_parse_tool_calls_without_tools_in_the_request(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text=TOOL_CALL_TEXT,
+        prompt_tokens=7,
+        generated_tokens=3,
+    )
+
+    response = client.post("/api/chat", json={"model": MODEL, "messages": MESSAGES})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "tool_calls" not in payload["message"]
+    assert TOOL_CALL_TEXT in payload["message"]["content"]
+
+
+def test_chat_forwards_the_tool_history_to_the_engine(client: TestClient, engine: Any) -> None:
+    tool_call = {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+    messages = [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [tool_call]},
+        {"role": "tool", "content": "22C", "tool_name": "get_weather"},
+    ]
+
+    client.post("/api/chat", json={"model": MODEL, "messages": messages, "tools": TOOLS})
+
+    args, _ = engine.return_value.generate_chat.call_args
+    assert args[0] == [
+        ChatTurn("user", "Weather?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "22C", tool_name="get_weather"),
+    ]

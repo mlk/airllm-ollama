@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
+from airllm_ollama.chat import ChatTurn
 from airllm_ollama.config import get_settings
 from airllm_ollama.engine import Decision, GenerationResult, StreamChunk
 from airllm_ollama.exceptions import GenerationError, ModelInitializationError
@@ -176,7 +177,7 @@ def test_chat_completions_forwards_the_messages(
     )
 
     args, kwargs = engine.return_value.generate_chat.call_args
-    assert args[0] == [("system", "Be terse."), ("user", "Hello")]
+    assert args[0] == [ChatTurn("system", "Be terse."), ChatTurn("user", "Hello")]
     assert kwargs["model"] == model
 
 

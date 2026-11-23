@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from airllm_ollama.chat import render_chat, render_completion, render_transcript
+from airllm_ollama.chat import ChatTurn, render_chat, render_completion, render_transcript
+from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction, ToolDefinition, ToolFunction
 from fakes import SystemRoleTokenizer
 
 MESSAGES = [
-    ("system", "Be brief."),
-    ("user", "Hello"),
-    ("assistant", "Hi!"),
+    ChatTurn("system", "Be brief."),
+    ChatTurn("user", "Hello"),
+    ChatTurn("assistant", "Hi!"),
 ]
 
 
@@ -21,7 +22,7 @@ def test_render_transcript_flattens_the_history() -> None:
 
 
 def test_render_transcript_of_a_single_message() -> None:
-    assert render_transcript([("user", "Hello")]) == "User: Hello\n\nAssistant:"
+    assert render_transcript([ChatTurn("user", "Hello")]) == "User: Hello\n\nAssistant:"
 
 
 def test_render_transcript_of_an_empty_history() -> None:
@@ -112,7 +113,7 @@ def test_a_template_that_refuses_the_system_role_gets_the_merged_messages() -> N
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    rendered = render_chat(tokenizer, [("system", "Be brief."), ("user", "Hello")])
+    rendered = render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
 
     assert rendered.text == "templated"
     assert rendered.add_special_tokens is False
@@ -126,10 +127,10 @@ def test_the_history_after_the_first_user_turn_is_kept() -> None:
     render_chat(
         tokenizer,
         [
-            ("system", "Be brief."),
-            ("user", "Hello"),
-            ("assistant", "Hi!"),
-            ("user", "Again"),
+            ChatTurn("system", "Be brief."),
+            ChatTurn("user", "Hello"),
+            ChatTurn("assistant", "Hi!"),
+            ChatTurn("user", "Again"),
         ],
     )
 
@@ -147,7 +148,10 @@ def test_every_system_message_is_merged_into_the_first_user_turn() -> None:
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    render_chat(tokenizer, [("user", "Hello"), ("system", "Be brief."), ("user", "Again")])
+    render_chat(
+        tokenizer,
+        [ChatTurn("user", "Hello"), ChatTurn("system", "Be brief."), ChatTurn("user", "Again")],
+    )
 
     assert tokenizer.renderings == [
         [
@@ -162,7 +166,7 @@ def test_an_empty_system_message_is_dropped_by_the_merge() -> None:
     tokenizer = SystemRoleTokenizer()
     tokenizer.template = "templated"
 
-    render_chat(tokenizer, [("system", "   "), ("user", "Hello")])
+    render_chat(tokenizer, [ChatTurn("system", "   "), ChatTurn("user", "Hello")])
 
     assert tokenizer.renderings == [[{"role": "user", "content": "Hello"}]]
 
@@ -175,7 +179,7 @@ def test_a_template_that_refuses_everything_falls_back_to_the_transcript() -> No
             """Reject the messages."""
             raise ValueError("no template for this model")
 
-    messages = [("system", "Be brief."), ("user", "Hello")]
+    messages = [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
 
     rendered = render_chat(BrokenTokenizer(), messages)
 
@@ -200,7 +204,7 @@ def test_a_history_without_a_user_turn_is_not_asked_again() -> None:
 
     tokenizer = BrokenTokenizer()
 
-    render_chat(tokenizer, [("system", "Be brief."), ("assistant", "Hi!")])
+    render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("assistant", "Hi!")])
 
     assert tokenizer.calls == 1
 
@@ -300,3 +304,127 @@ def test_render_completion_merges_the_system_message_when_the_template_refuses_i
     assert rendered.text == "templated"
     assert rendered.add_special_tokens is False
     assert tokenizer.renderings == [[{"role": "user", "content": "Be terse.\n\nhello"}]]
+
+
+TOOL_MESSAGES = [
+    ChatTurn("user", "What is the weather in Paris?"),
+    ChatTurn(
+        "assistant",
+        "",
+        tool_calls=(
+            ToolCall(function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})),
+        ),
+    ),
+    ChatTurn("tool", "22°C", tool_name="get_weather"),
+]
+
+TOOLS = [
+    ToolDefinition(
+        function=ToolFunction(
+            name="get_weather",
+            description="Get the weather of a city.",
+            parameters={
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        )
+    )
+]
+
+
+def test_render_transcript_renders_tool_calls_and_tool_results() -> None:
+    rendered = render_transcript(TOOL_MESSAGES)
+
+    assert rendered == (
+        "User: What is the weather in Paris?\n\n"
+        'Assistant: [tool_calls: get_weather({"city": "Paris"})]\n\n'
+        "Tool[get_weather]: 22°C\n\n"
+        "Assistant:"
+    )
+
+
+def test_render_transcript_lists_the_offered_tools() -> None:
+    rendered = render_transcript([ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert rendered.startswith('Tools: [{"type": "function"')
+    assert rendered.endswith("User: Hello\n\nAssistant:")
+
+
+def test_the_template_receives_the_tool_calls_and_the_tool_results() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assert tokenizer.renderings[0] == [
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "22°C",
+            "tool_name": "get_weather",
+            "name": "get_weather",
+        },
+    ]
+
+
+def test_the_template_receives_the_offered_tools() -> None:
+    tokenizer = FakeToolTokenizer()
+
+    render_chat(tokenizer, [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert tokenizer.tools == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather of a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+
+
+def test_a_template_without_the_tools_keyword_still_renders_the_history() -> None:
+    """A template that refuses the tools falls back to the transcript with the tools."""
+
+    class ToolsRefusingTokenizer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            self.calls += 1
+            raise ValueError("unexpected keyword argument 'tools'")
+
+    rendered = render_chat(ToolsRefusingTokenizer(), [ChatTurn("user", "Hello")], tools=TOOLS)
+
+    assert rendered.text.startswith("Tools: [")
+    assert "User: Hello" in rendered.text
+
+
+class FakeToolTokenizer:
+    """Tokenizer double recording the messages and the tools it was given."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.tools: object = None
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages the way a chat template would."""
+        self.renderings.append(list(messages))
+        self.tools = kwargs.get("tools")
+        return "<​|im_start|>assistant\n"

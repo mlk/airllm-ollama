@@ -658,3 +658,117 @@ def test_the_full_journey_of_an_ollama_client(service: TestClient, factory: Fake
     assert health.json()["model_loaded"] is True
 
     assert len(factory.model.calls) == 2
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the weather of a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+TOOL_CALL_TEXT = (
+    'Let me check. <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+)
+
+
+def test_api_chat_returns_the_tool_calls_of_the_model(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.output = TOOL_CALL_TEXT
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"]["role"] == "assistant"
+    assert payload["message"]["content"] == "Let me check."
+    assert payload["message"]["tool_calls"] == [
+        {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+    ]
+
+
+def test_api_chat_offers_the_tools_to_the_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer.template = "<​|im_start|>assistant\n"
+
+    service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert factory.model.tokenizer.template_kwargs[-1]["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather of a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ]
+
+
+def test_api_chat_renders_a_tool_history_for_the_template(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    factory.model.tokenizer.template = "<​|im_start|>assistant\n"
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+                    ],
+                },
+                {"role": "tool", "content": "22C", "tool_name": "get_weather"},
+            ],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert factory.model.tokenizer.renderings[-1] == [
+        {"role": "user", "content": "Weather in Paris?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+                }
+            ],
+        },
+        {"role": "tool", "content": "22C", "tool_name": "get_weather", "name": "get_weather"},
+    ]

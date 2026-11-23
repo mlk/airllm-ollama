@@ -236,7 +236,7 @@ Configuration is read from environment variables prefixed with `AIRLLM_OLLAMA_`
 | `AIRLLM_OLLAMA_KEEP_ALIVE` | _(empty)_ | Default lifetime of the loaded model (e.g. `5m`); empty keeps it loaded |
 | `AIRLLM_OLLAMA_STREAM_FORMAT` | `ndjson` | Framing of the streaming responses: `ndjson` (like Ollama) or `sse` |
 | `AIRLLM_OLLAMA_DECISION_TEMPLATE` | `Context: {state}\nChoices: {choices}\nSelected Option:` | The prompt template of the decision models (`POST /v1/systemone`) |
-| `AIRLLM_OLLAMA_CAPABILITIES` | `completion` | The capabilities of the served model, comma separated: `completion` for a model that generates text, `decision` for a decision model |
+| `AIRLLM_OLLAMA_CAPABILITIES` | `completion` | The capabilities of the served model, comma separated: `completion` for a model that generates text, `decision` for a decision model, `tools` for a model that calls functions (see "Tool calls") |
 
 A `.env` file overrides every one of these values. If yours still sets a
 variable that has a new default, remove the line to pick the default up again.
@@ -336,23 +336,26 @@ not been fetched yet is listed with empty metadata.
 
 The `capabilities` of the model are `["completion"]`: the service generates
 text, and the chat endpoint is a completion — Ollama has no `chat` capability.
-The other capabilities (`tools`, `vision`, `embedding`, `decision`) come with
-the features that are not implemented yet.
+The other capabilities (`vision`, `embedding`) come with the features that are
+not implemented yet.
 
 A **decision model** — the kind of `POST /v1/systemone` uses — reports
-`["decision"]`. The service cannot tell the two apart (a decision model is an
-ordinary causal language model), so the capability is configured:
+`["decision"]`, and a **tool-calling model** reports `tools`. The service
+cannot tell those apart from a plain completion model (they are ordinary
+causal language models), so the capability is configured:
 
 ```bash
 export AIRLLM_OLLAMA_CAPABILITIES=decision
+# or, for a tool-calling model
+export AIRLLM_OLLAMA_CAPABILITIES=completion,tools
 # ...or, on the command line
 uv run --extra airllm python -m airllm_ollama --capabilities decision
 ```
 
 The value is a comma separated list, so a model that does both reports
-`completion,decision`. Ollama has no `decision` capability of its own — the
-value is an extension of this service, and a client that does not know it
-ignores it.
+`completion,decision`. `tools` is the same capability Ollama reports for
+tool-calling models; `decision` is an extension of this service — a client
+that does not know it ignores it.
 
 `POST /api/show` answers the details of that model, in the shape Ollama uses:
 
@@ -591,6 +594,79 @@ is not tokenized twice, that count is one **lower** than it was before the
 double BOS token was removed — the number is the correct one now.
 
 `options`, `keep_alive` and `stream` behave exactly like in `/api/generate`.
+
+#### Tool calls
+
+A model that was trained for function calling can call the tools the client
+offers. Send the tools alongside the messages; the model then answers with a
+`<tool_call>` block, which the service reports as `tool_calls` on the
+assistant message:
+
+```bash
+curl http://127.0.0.1:8000/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        "messages": [{"role": "user", "content": "Weather in Paris?"}],
+        "tools": [
+          {"type": "function",
+           "function": {
+             "name": "get_weather",
+             "description": "Get the weather of a city.",
+             "parameters": {
+               "type": "object",
+               "properties": {"city": {"type": "string"}},
+               "required": ["city"]
+             }
+           }}
+        ]
+      }'
+```
+
+```json
+{
+  "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+  "created_at": "2026-10-23T12:00:19.123456Z",
+  "message": {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {"function": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+    ]
+  },
+  "done": true,
+  "done_reason": "stop"
+}
+```
+
+How the history is rendered for the model:
+
+* The **`tools`** are handed to the chat template of the model
+  (`apply_chat_template(..., tools=...)`) — the template decides how the model
+  is told about them. A model without a chat template gets a `Tools: [...]`
+  line at the top of the transcript.
+* Assistant messages with tool calls are rendered in the Hugging Face format
+  (`{"type": "function", "function": {"name", "arguments": {...}}}`), tool
+  results as `{"role": "tool", "content": ..., "tool_name": ...}` (the
+  `tool_name` is repeated as `name`, which is what most templates read).
+* The answer is parsed for `<tool_call>{...}</tool_call>` blocks — the
+  convention of the tool-calling models (Hermes, Qwen, ...). `arguments` may
+  be a JSON object or a JSON-encoded string. Text that is not a valid tool
+  call is left in `content` untouched.
+
+Notes and limits:
+
+* Only models trained for function calling can use this; the service cannot
+  detect that, so advertise the capability explicitly with
+  `AIRLLM_OLLAMA_CAPABILITIES=completion,tools`.
+* The parsing happens in the non-streaming answer only for now. With
+  `stream: true` the raw `<tool_call>` block is streamed as content like any
+  other text (tracked in #103).
+* The OpenAI `/v1/chat/completions` shape of the tool calls
+  (`id`, `arguments` as a JSON string, `finish_reason: "tool_calls"`) is
+  tracked in #104.
+* `arguments` in the tool calls of the request and of the response are JSON
+  **objects**, unlike the OpenAI API, where they are JSON strings.
 
 ### The OpenAI API
 

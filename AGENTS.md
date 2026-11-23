@@ -164,6 +164,7 @@ src/airllm_ollama/
 ├── schemas/           # pydantic request/response models
 ├── stopping.py        # the criterion that ends a generation (stop sequences, abort)
 ├── streaming.py       # streamer turning the generated tokens into text
+├── tool_calls.py      # extraction of the <tool_call> blocks of a model answer
 └── version.py         # __version__ (derived from the git tags by hatch-vcs)
 ```
 
@@ -211,9 +212,9 @@ src/airllm_ollama/
   one place (`schemas/tags.py`, `CAPABILITIES`) — `/api/tags` and `/api/show`
   report the same list. The service generates text; the chat endpoint is a
   completion, Ollama has **no** `chat` capability. The other capabilities of
-  Ollama (`tools`, `vision`, `embedding`, `decision`, …) come with the features
-  that are not implemented yet — `tools` with the tool calls (#16),
-  `embedding` with the embeddings (#64).
+  Ollama (`tools`, `vision`, `embedding`, `decision`, …) are opt-in — the
+  `tools` capability is configured with the tool-calling support (#102),
+  `embedding` comes with the embeddings (#64).
 * The capabilities of the **served** model are configured (issue #81):
   `AIRLLM_OLLAMA_CAPABILITIES` (a comma separated list) or the argument
   `--capabilities`. The default is `completion`; a decision model answers
@@ -425,8 +426,39 @@ src/airllm_ollama/
   never forwarded to AirLLM. The `raw` argument of `generate()`,
   `generate_result()` and `generate_stream()` is keyword-only as well: it asks
   for the prompt without the chat template and is never forwarded to AirLLM.
-  `ChatMessage.role` is free-form (Ollama is permissive too); tool calls are
-  not supported yet, so a `tool` role is rendered like any other role.
+  `ChatMessage.role` is free-form (Ollama is permissive too). Tool calls in
+  `/api/chat` are supported (#102): an assistant message carries
+  `tool_calls` (`function.name` + `function.arguments` as a JSON object), a
+  `tool` role message carries `tool_name`, and the offered tools are rendered
+  by the chat template (`tools=` keyword) with a `Tools: [...]` line in the
+  transcript fallback. In the non-streaming answer, `<tool_call>{...}</tool_call>`
+  blocks are parsed out of the text and reported as `tool_calls`; streaming
+  tool calls are #103, the OpenAI format is #104.
+
+### Tool calls (issue #102, non-streaming)
+
+* `ChatTurn` (the message the engine renders) is a frozen dataclass:
+  `role`, `content`, `tool_calls` (a tuple of `ToolCall`), `tool_name` —
+  not a `(role, content)` tuple any more. The `ChatMessage` schema accepts
+  `tool_calls` on assistant messages (arguments as a JSON object, unlike the
+  OpenAI API) and `tool_name` on `tool` messages; `content` defaults to `""`
+  so a tool-calling assistant message may omit it.
+* The offered `tools` are rendered by the chat template (`apply_chat_template`
+  passes `tools=` through), in the OpenAI-style shape
+  (`{"type": "function", "function": {...}}`). The transcript fallback renders
+  them as a `Tools: [...]` line at the top instead.
+* Assistant `tool_calls` render in the Hugging Face shape (`arguments` stays a
+  JSON object); a `tool` message renders as `{"role": "tool", ...}` with both
+  `tool_name` (Ollama's name) and `name` (what most templates read).
+* The answer of the model is parsed for `<tool_call>{...}</tool_call>` blocks
+  (`tool_calls.extract_tool_calls()`): a valid block is removed from the text
+  and reported as `tool_calls`; an invalid block stays in the text untouched.
+  Arguments may be a JSON object or a JSON-encoded string. Parsing happens
+  only when the request offered tools.
+* The parsing happens in the non-streaming path only. Streaming (#103) and
+  the OpenAI wire format (`/v1/chat/completions`, #104) are separate tickets.
+* The `tools` capability is opt-in (`AIRLLM_OLLAMA_CAPABILITIES`), like
+  `decision` — the service cannot detect tool-calling support.
 
 ### OpenAI compatibility (issue #20, done)
 
