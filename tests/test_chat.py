@@ -1172,19 +1172,25 @@ def test_a_template_that_validates_the_arguments_accepts_the_marked_history() ->
 
         def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
             """Reject argument keys other than the declared ones."""
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
             for message in messages:
                 for call in message.get("tool_calls", []):
-                    unexpected = set(call["function"]["arguments"]) - {"city"}
+                    properties = set(
+                        tools[call["function"]["name"]]["parameters"].get("properties", {})
+                    )
+                    unexpected = set(call["function"]["arguments"]) - properties
                     if unexpected:
                         raise ValueError("unexpected arguments")
             self.renderings.append(list(messages))
-            return (
-                "\n".join(
+            return "\n".join(
+                [json.dumps(kwargs.get("tools") or [], default=str)]
+                + [
                     json.dumps(call["function"])
                     for message in messages
                     for call in message.get("tool_calls", [])
-                )
-                or "ok"
+                ]
             )
 
     tokenizer = StrictTokenizer()
@@ -1409,7 +1415,7 @@ def test_a_strict_schema_validating_template_is_accepted() -> None:
             tools = {
                 tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
             }
-            parts = []
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
             for message in messages:
                 for call in message.get("tool_calls", []):
                     function = call["function"]
@@ -1478,3 +1484,126 @@ def test_a_template_dropping_boolean_array_arguments_falls_back() -> None:
     rendered = render_chat(NameOnlyTokenizer(), messages)
 
     assert "Tool[set_flags]: done" in rendered.text
+
+
+def test_escaped_unicode_in_arguments_does_not_break_verification() -> None:
+    """JSON-escaped non-ASCII content must match the sentinels."""
+
+    class EscapeTokenizer:
+        """Tokenizer that renders everything as ASCII-only JSON."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                for call in message.get("tool_calls", []):
+                    parts.append(json.dumps(call["function"]))
+                parts.append(json.dumps(message.get("content", "")))
+                parts.append(json.dumps(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Méteo?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"ville": "Montréal"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrés", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(EscapeTokenizer(), messages, TOOLS)
+
+    assert not rendered.text.startswith("Tools:")
+
+
+def test_an_enum_argument_stays_schema_valid() -> None:
+    """An enum-constrained argument is replaced by another enum member."""
+    enum_tools = [
+        ToolDefinition(
+            function=ToolFunction(
+                name="set_units",
+                description="Set the units.",
+                parameters={
+                    "type": "object",
+                    "properties": {"units": {"type": "string", "enum": ["C", "F"]}},
+                    "required": ["units"],
+                },
+            )
+        )
+    ]
+
+    class EnumStrictTokenizer:
+        """Tokenizer that enforces the enum on every call."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
+            parts = [json.dumps(kwargs.get("tools") or [], default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                for call in message.get("tool_calls", []):
+                    function = call["function"]
+                    for arg_name, arg_value in function["arguments"].items():
+                        spec = (
+                            tools[function["name"]]["parameters"]
+                            .get("properties", {})
+                            .get(arg_name, {})
+                        )
+                        enum = spec.get("enum")
+                        assert enum is None or arg_value in enum
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Use Celsius"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="set_units", arguments={"units": "C"})),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_units"),
+    ]
+
+    rendered = render_chat(EnumStrictTokenizer(), messages, enum_tools)
+
+    assert not rendered.text.startswith("Tools:")
+
+
+def test_a_template_rendering_only_the_tools_falls_back_to_the_transcript() -> None:
+    """The tool definitions alone must not satisfy verification."""
+
+    class SchemaOnlyTokenizer:
+        """Tokenizer that renders the offered tools but never the history."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return json.dumps(kwargs.get("tools") or [], default=str)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(SchemaOnlyTokenizer(), messages, TOOLS)
+
+    assert rendered.text.startswith("Tools:")

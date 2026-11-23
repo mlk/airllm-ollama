@@ -8,6 +8,8 @@ transcript instead.
 from __future__ import annotations
 
 import json
+import math
+import re
 import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -261,6 +263,42 @@ def apply_chat_template(
     return None
 
 
+_JSON_SURROGATE_PAIR = re.compile(r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})")
+_JSON_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}|\\[\"\\/bfnrt]|\\\\")
+
+
+def _unescape_json(text: str) -> str:
+    r"""Decode JSON string escapes in rendered text.
+
+    Templates serialize non-ASCII text (and some punctuation) with JSON
+    escapes, so the rendered output may spell ``é`` as ``\\u00e9``. The
+    probes compare against the decoded form.
+    """
+    text = _JSON_SURROGATE_PAIR.sub(
+        lambda m: chr(
+            0x10000 + ((int(m.group(1), 16) - 0xD800) << 10) + (int(m.group(2), 16) - 0xDC00)
+        ),
+        text,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.startswith("\\u"):
+            return chr(int(token[2:], 16))
+        return {
+            '\\"': '"',
+            "\\/": "/",
+            "\\b": "\b",
+            "\\f": "\f",
+            "\\n": "\n",
+            "\\r": "\r",
+            "\\t": "\t",
+            "\\\\": "\\",
+        }[token]
+
+    return _JSON_ESCAPE.sub(replace, text)
+
+
 def _squash(text: str) -> str:
     """Collapse all runs of whitespace, so formatting cannot hide a probe."""
     return " ".join(text.split())
@@ -269,7 +307,9 @@ def _squash(text: str) -> str:
 def _mark_tool_messages(
     messages: Sequence[ChatTurn],
     seed: str,
-    rename: Mapping[str, tuple[str, dict[str, str]]] | None = None,
+    rename: (
+        Mapping[str, tuple[str, dict[str, str], dict[str, Any] | None, str, str]] | None
+    ) = None,
 ) -> tuple[list[ChatTurn], list[str]]:
     """Insert sentinel markers into the tool messages and call arguments.
 
@@ -285,8 +325,9 @@ def _mark_tool_messages(
     stays valid for templates that validate the arguments against the
     schema.
 
-    ``rename`` maps an offered tool's name to the probe name and to the
-    renamed parameters of the probe schema (see :func:`_verified`). Calls
+    ``rename`` maps an offered tool's name to the probe name, the parameter
+    renames of the probe schema, the probe parameters and the probe argument
+    value injected into every marked call (see :func:`_verified`). Calls
     and tool messages that reference a renamed tool use the probe names, so
     the marked history stays consistent with the offered probe tools.
     """
@@ -310,18 +351,29 @@ def _mark_tool_messages(
                 original = call.function.name
                 rename_map = rename.get(original)
                 if rename_map is not None:
-                    name_marker, param_map = rename_map
+                    name_marker, param_map, parameters_schema, probe_key, probe_value = rename_map
                 else:
                     name_marker = f"qxname{seed}{index}{ordinal}"
                     param_map = {}
+                    parameters_schema = None
+                    probe_key = f"qxkey{seed}{index}{ordinal}"
+                    probe_value = f"qxval{seed}{index}{ordinal}"
                     markers.append(name_marker)
                 arguments: dict[str, Any] = {
                     param_map.get(key, key): value for key, value in call.function.arguments.items()
                 }
-                arguments_marked, argument_markers = _mark_argument_values(
-                    arguments, seed, index, ordinal
+                arguments_marked_raw, argument_markers = _mark_argument_values(
+                    arguments, seed, index, ordinal, parameters_schema
                 )
-                arguments = cast("dict[str, Any]", arguments_marked)
+                arguments = cast("dict[str, Any]", arguments_marked_raw)
+                # The call needs a marker of its own: the schema markers
+                # alone cannot prove the template rendered the call and not
+                # only the offered tool definition. The probe key is
+                # declared in the probe schema, so the marked call stays
+                # schema-valid for strict templates. Without a probe
+                # schema there is no schema to violate.
+                arguments = {**arguments, probe_key: probe_value}
+                argument_markers.append(probe_value)
                 markers.extend(argument_markers)
                 calls.append(
                     ToolCall(
@@ -342,47 +394,113 @@ def _mark_tool_messages(
     return marked, markers
 
 
+def _schema_of(node: object) -> dict[str, Any]:
+    """Return the JSON schema node, or an empty schema when absent."""
+    return node if isinstance(node, dict) else {}
+
+
+def _pick_number(value: float, low: object, high: object) -> int | None:
+    """Pick a marker integer inside the schema bounds, different from value."""
+    lo = math.ceil(low) if isinstance(low, (int, float)) else None
+    hi = math.floor(high) if isinstance(high, (int, float)) else None
+    if lo is not None and hi is not None:
+        if lo > hi:
+            return None
+        for candidate in range(lo, hi + 1):
+            if candidate != value:
+                return candidate
+        return None
+    if lo is not None:
+        return lo if lo != value else lo + 1
+    if hi is not None:
+        return hi if hi != value else hi - 1
+    return 10**9 + secrets.randbelow(9 * 10**9)
+
+
 def _mark_argument_values(
-    value: object, seed: str, index: int, ordinal: int
+    value: object,
+    seed: str,
+    index: int,
+    ordinal: int,
+    schema: dict[str, Any] | None = None,
 ) -> tuple[object, list[str]]:
     """Replace every argument value with a marked counterpart.
 
-    Strings get a random sentinel suffix, numbers are replaced with a
-    unique ten-digit marker (so the marker survives any numeric
-    serialization); booleans and null cannot carry a marker and are left
-    alone. The structure of the arguments is otherwise untouched — no keys
-    are added or removed — so the marked call stays valid for templates
+    Strings get a random sentinel suffix (a different enum member when the
+    schema constrains the value), numbers are replaced with a different
+    value inside the schema bounds (a unique ten-digit marker when
+    unconstrained), booleans are flipped to the other enum member when the
+    enum allows it, and booleans/null/empty containers contribute their
+    key as a marker. The structure, keys and constraints of the arguments
+    are otherwise untouched, so the marked call stays valid for templates
     that check the arguments against the schema.
     """
     markers: list[str] = []
+    counter = 0
 
-    def mark(current: object, key: str | None) -> object:
+    def mark(current: object, schema: object, key: str | None) -> object:
+        nonlocal counter
+        sch = _schema_of(schema)
+        enum = sch.get("enum")
+        enum = enum if isinstance(enum, list) else None
         if isinstance(current, bool) or current is None:
-            # Booleans and null cannot carry a sentinel; require that their
-            # key survives in the output instead.
-            if key is not None:
+            flipped = None
+            if isinstance(enum, list):
+                candidates = [o for o in enum if isinstance(o, bool) and o is not current]
+                if candidates:
+                    flipped = candidates[0]
+            if flipped is not None:
+                markers.append(str(flipped).lower())
+            elif key is not None:
                 markers.append(key)
-            return current
+            return flipped if flipped is not None else current
         if isinstance(current, (dict, list)) and not current:
             # Empty containers have nothing to mark; require their key.
             if key is not None:
                 markers.append(key)
             return current
         if isinstance(current, str):
-            marker = f"qxarg{seed}{index}{ordinal}{len(markers)}"
+            if enum is not None:
+                choices = [o for o in enum if isinstance(o, str) and o != current]
+                if choices:
+                    markers.append(str(choices[0]))
+                    return choices[0]
+                if key is not None:
+                    markers.append(key)
+                return current
+            counter += 1
+            marker = f"qxarg{seed}{index}{ordinal}{counter}"
             markers.append(marker)
             return current + marker
         if isinstance(current, (int, float)):
-            marker = str(10**9 + secrets.randbelow(9 * 10**9))
-            markers.append(marker)
-            return int(marker)
+            if enum is not None:
+                numbers = [
+                    o
+                    for o in enum
+                    if isinstance(o, (int, float)) and not isinstance(o, bool) and o != current
+                ]
+                if numbers:
+                    markers.append(str(numbers[0]))
+                    return numbers[0]
+            marker_number = _pick_number(current, sch.get("minimum"), sch.get("maximum"))
+            if marker_number is None:
+                if key is not None:
+                    markers.append(key)
+                return current
+            markers.append(str(marker_number))
+            return marker_number
         if isinstance(current, dict):
-            return {key: mark(item, str(key)) for key, item in current.items()}
+            properties = _schema_of(sch.get("properties"))
+            return {
+                key: mark(item, properties.get(str(key), {}), str(key))
+                for key, item in current.items()
+            }
         if isinstance(current, list):
-            return [mark(item, key) for item in current]
+            item_schema = sch.get("items", {})
+            return [mark(item, item_schema, key) for item in current]
         return current
 
-    return mark(value, None), markers
+    return mark(value, schema, None), markers
 
 
 def _verified(
@@ -428,37 +546,49 @@ def _verified(
             break
     probe_tools: list[ToolDefinition] | None = None
     tool_markers: list[str] = []
-    rename: dict[str, tuple[str, dict[str, str]]] = {}
+    rename: dict[str, tuple[str, dict[str, str], dict[str, Any] | None, str, str]] = {}
     if tools:
-        # Every offered tool is probed: it is renamed to a sentinel and its
-        # first parameter is renamed the same way. A template that renders
-        # only part of the tool list or renders the names without the
-        # parameter schema is detected here. The calls in the history are
-        # renamed the same way, so the probe stays consistent with the
-        # schema a strict template validates against.
+        # Every offered tool is probed: it is renamed to a sentinel, its
+        # first parameter is renamed the same way, and its schema carries a
+        # probe property. The probe history is rendered against this
+        # schema, so a strict template validating the call against the
+        # offered schema still accepts it. The calls in the history are
+        # renamed in the same way, so the probe stays consistent.
         probe_tools = []
         for index, tool in enumerate(tools):
             function = tool.function
             name_marker = f"qxtool{secrets.token_hex(4)}{index}"
+            probe_key = f"qxkey{secrets.token_hex(4)}{index}"
+            probe_value = f"qxval{secrets.token_hex(4)}{index}"
             parameters = function.parameters
             parameter_marker: str | None = None
             parameter_map: dict[str, str] = {}
-            if isinstance(parameters, dict):
-                properties = parameters.get("properties")
-                if isinstance(properties, dict) and properties:
-                    first_key = next(iter(properties))
-                    parameter_marker = f"qxparam{secrets.token_hex(4)}{index}"
-                    properties = dict(properties)
-                    properties[parameter_marker] = properties.pop(first_key)
-                    parameters = dict(parameters)
-                    parameters["properties"] = properties
-                    required = parameters.get("required")
-                    if isinstance(required, list):
-                        parameters["required"] = [
-                            parameter_marker if item == first_key else item for item in required
-                        ]
-                    parameter_map = {first_key: parameter_marker}
-            rename[function.name] = (name_marker, parameter_map)
+            properties = parameters.get("properties")
+            properties = dict(properties) if isinstance(properties, dict) else {}
+            if properties:
+                first_key = next(iter(properties))
+                parameter_marker = f"qxparam{secrets.token_hex(4)}{index}"
+                properties[parameter_marker] = properties.pop(first_key)
+                parameters = dict(parameters)
+                parameters["properties"] = properties
+                required = parameters.get("required")
+                if isinstance(required, list):
+                    parameters["required"] = [
+                        parameter_marker if item == first_key else item for item in required
+                    ]
+                parameter_map = {first_key: parameter_marker}
+            parameters = dict(parameters)
+            parameters["properties"] = {
+                **parameters.get("properties", {}),
+                probe_key: {"type": "string"},
+            }
+            rename[function.name] = (
+                name_marker,
+                parameter_map,
+                parameters,
+                probe_key,
+                probe_value,
+            )
             tool_markers.append(name_marker)
             if parameter_marker is not None:
                 tool_markers.append(parameter_marker)
@@ -475,17 +605,37 @@ def _verified(
     marked, markers = _mark_tool_messages(candidate, seed, rename)
     if probe_tools is None and not markers and system_probe is None:
         return True
-    rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
+
+    def render_and_check(offered: Sequence[ToolDefinition] | None, required: list[str]) -> bool:
+        rendered = _render_with_template(render, marked, offered, supports_tool_calls, null_content)
+        if rendered is None:
+            return False
+        squashed = _squash(_unescape_json(rendered)).lower()
+        if (
+            required_fragment is not None
+            and _squash(_unescape_json(required_fragment)).lower() not in squashed
+        ):
+            return False
+        if system_probe is not None and system_probe.lower() not in squashed:
+            return False
+        return all(marker.lower() in squashed for marker in required)
+
+    if probe_tools is None:
+        return render_and_check(None, markers)
+    # A single render with the offer covers the full history: the schema
+    # markers prove the offered tools survive, the history markers prove
+    # the conversation (including calls and their arguments) survives.
+    if not render_and_check(probe_tools, [*tool_markers, *markers]):
+        return False
+    # A second render with a minimal history proves the tools themselves
+    # are rendered, independent of the conversation: a template that
+    # prints the history but drops the tool definitions fails here.
+    blank = [ChatTurn("user", f"qxprobeblank{secrets.token_hex(4)}")]
+    rendered = _render_with_template(render, blank, probe_tools, supports_tool_calls, False)
     if rendered is None:
         return False
-    squashed = _squash(rendered).lower()
-    if required_fragment is not None and _squash(required_fragment).lower() not in squashed:
-        return False
-    if system_probe is not None and system_probe.lower() not in squashed:
-        return False
-    if any(marker.lower() not in squashed for marker in tool_markers):
-        return False
-    return all(marker.lower() in squashed for marker in markers)
+    squashed = _squash(_unescape_json(rendered)).lower()
+    return all(marker.lower() in squashed for marker in tool_markers)
 
 
 def _render_with_string_arguments(

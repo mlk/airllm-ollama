@@ -37,6 +37,7 @@ from airllm_ollama.model_metadata import has_own_output_head
 from airllm_ollama.schemas.tools import ToolDefinition
 from airllm_ollama.stopping import StopGeneration
 from airllm_ollama.streaming import TextStreamer
+from airllm_ollama.tool_calls import prompt_ends_in_think
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class GenerationResult:
     prompt_duration_ns: int = 0
     eval_duration_ns: int = 0
     total_duration_ns: int = 0
+    starts_in_think: bool = False
 
 
 @dataclass(frozen=True)
@@ -577,6 +579,7 @@ class AirLLMEngine:
             prompt_duration_ns=prompt_duration,
             eval_duration_ns=eval_duration,
             total_duration_ns=time.perf_counter_ns() - started,
+            starts_in_think=prompt_ends_in_think(prompt.text),
         )
 
     def generate_stream(

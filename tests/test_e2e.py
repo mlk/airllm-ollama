@@ -786,3 +786,58 @@ def test_api_chat_renders_a_tool_history_for_the_template(
             "tool_call_id": "call00001",
         },
     ]
+
+
+class ThinkPrefillTokenizer(EchoTokenizer):
+    """Tokenizer whose chat template ends with an open ``<think>`` tag."""
+
+    def apply_chat_template(self, messages: object, **kwargs: object) -> str:
+        """Render the echo and prefill the reasoning block, like QwQ does."""
+        return super().apply_chat_template(messages, **kwargs) + "<think>"
+
+
+def test_api_chat_with_think_prefill_does_not_execute_a_call_in_reasoning(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A prompt that opens a think block keeps the call inside it inert."""
+    factory.model.tokenizer = ThinkPrefillTokenizer("<​|im_start|>assistant\n")
+    factory.model.output = (
+        'reasoning <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}'
+        "</tool_call> more reasoning"
+    )
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"].get("tool_calls") is None
+
+
+def test_api_chat_with_think_prefill_executes_a_call_after_the_block(
+    service: TestClient, factory: FakeFactory
+) -> None:
+    """A call after the prefilled think block closes is executed."""
+    factory.model.tokenizer = ThinkPrefillTokenizer("<​|im_start|>assistant\n")
+    factory.model.output = (
+        '</think>\n<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
+    )
+
+    response = service.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Weather in Paris?"}],
+            "tools": TOOLS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [call["function"]["name"] for call in response.json()["message"]["tool_calls"]] == [
+        "get_weather"
+    ]

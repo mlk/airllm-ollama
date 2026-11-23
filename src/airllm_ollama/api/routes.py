@@ -227,7 +227,9 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     # history already carries a tool exchange — the model is then expected
     # to answer in that format.
     parse_tools = bool(request.tools) or has_tool_material(messages)
-    content, tool_calls = extract_tool_calls(text) if parse_tools else (text, [])
+    content, tool_calls = (
+        extract_tool_calls(text, in_think=result.starts_in_think) if parse_tools else (text, [])
+    )
     # A message may carry both text and tool calls (Ollama does the same):
     # whatever the model wrote stays in the content
     # (empty when it went straight to the call).
