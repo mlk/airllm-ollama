@@ -102,5 +102,7 @@ of what to praise:
 * Don't flag style issues that ruff/mypy would catch in CI.
 * Don't suggest adding tests for trivial getters or simple pass-through
   functions.
-* Don't require streaming support, tool calls, or chat template perfection —
-  these are tracked as separate issues.
+* Don't require the features that are deliberately not implemented yet: the
+  tool calls of the chat and the embeddings. The streaming of the routes, the
+  chat template and the stop sequences **are** implemented — they are part of
+  the contract of the service, so a regression in them is a finding.

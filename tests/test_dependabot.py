@@ -85,7 +85,9 @@ def test_the_ecosystem_covers_the_actions_of_the_workflows() -> None:
 
     workflows = ROOT / ".github" / "workflows"
     actions = set()
-    for path in workflows.glob("*.yml"):
+    # GitHub Actions loads the workflows of both extensions, so both are read.
+    paths = sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
+    for path in paths:
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip().lstrip("- ").strip()
             if stripped.startswith("uses:"):

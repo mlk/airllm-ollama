@@ -50,8 +50,9 @@ jobs:
 
             Do not demand changes that the issue tracker already accounts for as
             future work, and do not require the features that are deliberately
-            not implemented yet (streaming of the OpenAI routes, tool calls,
-            embeddings).
+            not implemented yet: the tool calls of the chat and the embeddings.
+            The streaming of the routes, the chat template and the stop
+            sequences are implemented — a regression in them is a finding.
 
             Judge the change against the architecture of the repository: the
             engine owns a single model and serialises the generations, the

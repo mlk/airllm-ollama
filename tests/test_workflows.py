@@ -17,6 +17,17 @@ WORKFLOWS = Path(__file__).parent.parent / ".github" / "workflows"
 ROOT = WORKFLOWS.parent.parent
 
 
+def _workflow_paths() -> list[Path]:
+    """Return the workflow files of the repository.
+
+    GitHub Actions loads the workflows of both extensions, so both are read.
+
+    Returns:
+        The workflow files.
+    """
+    return sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+
+
 def _workflow(name: str) -> tuple[dict[str, Any], str]:
     """Return the parsed workflow of the given name and its text.
 
@@ -130,11 +141,25 @@ def test_the_review_reads_the_conventions_of_the_repository() -> None:
     # The guidelines of the review live in the repository, not in the action.
     assert (ROOT / ".github" / "review-guidelines.md").is_file()
 
+    # The cap of the action is per file. It has to cover the longest of them,
+    # or the model would review without the conventions of the repository.
+    cap = int(str(inputs["context_max_chars"]))
+    for name in context_files:
+        length = len((ROOT / name).read_text(encoding="utf-8"))
+        assert cap >= length, f"the context of {name} would be truncated ({length} characters)"
+
+    # The cap of the action is per file. It has to cover the longest of them,
+    # or the model would review without the conventions of the repository.
+    cap = int(str(inputs["context_max_chars"]))
+    for name in context_files:
+        length = len((ROOT / name).read_text(encoding="utf-8"))
+        assert cap >= length, f"the context of {name} would be truncated ({length} characters)"
+
 
 def test_the_junie_review_is_gone() -> None:
     """The review does not run on JetBrains Junie any more."""
     # Every workflow is scanned: a Junie review under another name would keep
     # running on every pull request.
-    for path in WORKFLOWS.glob("*.yml"):
+    for path in _workflow_paths():
         assert "junie" not in path.read_text(encoding="utf-8").lower(), path.name
     assert not (ROOT / ".junie").exists()
