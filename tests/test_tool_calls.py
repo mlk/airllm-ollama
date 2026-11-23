@@ -699,7 +699,10 @@ def test_two_calls_with_backticks_in_their_arguments_are_both_parsed() -> None:
 
 
 def test_a_call_inside_an_unterminated_script_is_not_executed() -> None:
-    raw = 'Example: <script>var x = 1;\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+    raw = (
+        "Example: <script>var x = 1;\n"
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+    )
 
     _, calls = extract_tool_calls(raw)
 
