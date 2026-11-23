@@ -899,3 +899,27 @@ def test_a_link_destination_with_nested_parentheses_masks_the_backtick() -> None
     _, calls = extract_tool_calls(raw)
 
     assert calls == []
+
+
+def test_an_unclosed_link_destination_does_not_mask_code() -> None:
+    raw = '[a](url and `<tool_call>{"name":"delete_file"}</tool_call>`'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_less_than_sign_does_not_start_a_tag() -> None:
+    raw = 'I love it <3 and <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["search"]
+
+
+def test_many_unterminated_links_do_not_hang() -> None:
+    raw = "[x](" * 2000
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []

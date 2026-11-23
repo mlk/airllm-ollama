@@ -1376,3 +1376,105 @@ def test_a_template_rendering_arguments_with_only_booleans_falls_back() -> None:
     rendered = render_chat(NameOnlyTokenizer(), messages)
 
     assert "Tool[set_power]: done" in rendered.text
+
+
+def test_a_template_dropping_the_system_line_in_the_merge_falls_back() -> None:
+    """A template that skips the first message must not swallow the system prompt."""
+
+    class OnlyLastTokenizer:
+        """Tokenizer that renders only the last message."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return str(messages[-1].get("content", "")) if messages else ""
+
+    rendered = render_chat(
+        OnlyLastTokenizer(), [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")]
+    )
+
+    # Verification fails both candidates, so the transcript is used.
+    assert "Be brief." in rendered.text
+    assert "Hello" in rendered.text
+
+
+def test_a_strict_schema_validating_template_is_accepted() -> None:
+    """A template that validates calls against the offered schema passes."""
+
+    class StrictTokenizer:
+        """Tokenizer that validates the calls against the offered tools."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = {
+                tool["function"]["name"]: tool["function"] for tool in kwargs.get("tools") or []
+            }
+            parts = []
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    function = call["function"]
+                    if function["name"] not in tools:
+                        raise ValueError("unknown tool")
+                    properties = set(tools[function["name"]]["parameters"].get("properties", {}))
+                    if not set(call["function"]["arguments"]) <= properties:
+                        raise ValueError("argument outside the schema")
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            self.renderings.append(list(messages))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    tokenizer = StrictTokenizer()
+
+    rendered = render_chat(tokenizer, messages, TOOLS)
+
+    assert "21 degrees" in rendered.text
+    # The final render uses the real tool name, not the probe name.
+    final_calls = [
+        call for message in tokenizer.renderings[-1] for call in message.get("tool_calls", [])
+    ]
+    assert [call["function"]["name"] for call in final_calls] == ["get_weather"]
+
+
+def test_a_template_dropping_boolean_array_arguments_falls_back() -> None:
+    """Boolean values inside arrays cannot be probed by suffix; key markers catch a drop."""
+
+    class NameOnlyTokenizer:
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            return "\n".join(
+                ", ".join(call["function"]["name"] for call in message.get("tool_calls", []))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    messages = [
+        ChatTurn("user", "Set the flags"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="set_flags", arguments={"flags": [True, False]})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "done", tool_name="set_flags"),
+    ]
+
+    rendered = render_chat(NameOnlyTokenizer(), messages)
+
+    assert "Tool[set_flags]: done" in rendered.text

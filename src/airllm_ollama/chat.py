@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -233,15 +233,25 @@ def apply_chat_template(
     supports_tool_calls = _template_supports_tool_calls(
         getattr(tokenizer, "chat_template", None), offered is not None
     )
-    for candidate in (messages, _merge_system_message(messages)):
+    system_fragment = SEPARATOR.join(
+        message.content for message in messages if message.role == "system"
+    )
+    for index, candidate in enumerate((messages, _merge_system_message(messages))):
         if candidate is None:
             continue
+        # The merged candidate has no system message left, so the system
+        # probe cannot guard it; require the merged content to survive
+        # instead, so a template that keeps only part of the first user
+        # turn does not pass verification.
+        required = system_fragment.strip() if index == 1 and system_fragment.strip() else None
         # Null content only matters for assistant turns that carry tool
         # calls: try the empty string first (GLM and most templates render
         # it), fall back to null (DeepSeek-R1 needs it).
         needs_null = any(message.tool_calls and not message.content for message in candidate)
         for null_content in (False, True) if needs_null else (False,):
-            if not _verified(render, candidate, offered, supports_tool_calls, null_content):
+            if not _verified(
+                render, candidate, offered, supports_tool_calls, null_content, required
+            ):
                 continue
             rendered = _render_with_template(
                 render, candidate, offered, supports_tool_calls, null_content
@@ -257,7 +267,9 @@ def _squash(text: str) -> str:
 
 
 def _mark_tool_messages(
-    messages: Sequence[ChatTurn], seed: str
+    messages: Sequence[ChatTurn],
+    seed: str,
+    rename: Mapping[str, tuple[str, dict[str, str]]] | None = None,
 ) -> tuple[list[ChatTurn], list[str]]:
     """Insert sentinel markers into the tool messages and call arguments.
 
@@ -267,30 +279,49 @@ def _mark_tool_messages(
     marked, including ones with empty content — a template that ignores the
     tool role must not pass verification just because there was nothing to
     interpolate. Each call's function name is replaced with a sentinel, and
-    the first string argument (if any) carries one too — no extra argument
-    keys are added, so the marked call stays valid for templates that
-    validate the arguments against the schema.
+    every value of the call arguments is marked — strings get a suffix,
+    numbers a replacement, booleans and null contribute their key — without
+    adding or removing anything from the arguments, so the marked call
+    stays valid for templates that validate the arguments against the
+    schema.
+
+    ``rename`` maps an offered tool's name to the probe name and to the
+    renamed parameters of the probe schema (see :func:`_verified`). Calls
+    and tool messages that reference a renamed tool use the probe names, so
+    the marked history stays consistent with the offered probe tools.
     """
     marked: list[ChatTurn] = []
     markers: list[str] = []
+    rename = rename or {}
     for index, message in enumerate(messages):
+        tool_name = message.tool_name
+        if tool_name is not None and tool_name in rename:
+            tool_name = rename[tool_name][0]
         if message.role == "tool":
             marker = f"qx{seed}{index}q"
             marked.append(
-                ChatTurn(
-                    "tool", f"{marker} {message.content}", message.tool_calls, message.tool_name
-                )
+                ChatTurn("tool", f"{marker} {message.content}", message.tool_calls, tool_name)
             )
             markers.append(marker)
             continue
         if message.tool_calls:
             calls = []
             for ordinal, call in enumerate(message.tool_calls):
-                name_marker = f"qxname{seed}{index}{ordinal}"
-                arguments, argument_markers = _mark_argument_values(
-                    dict(call.function.arguments), seed, index, ordinal
+                original = call.function.name
+                rename_map = rename.get(original)
+                if rename_map is not None:
+                    name_marker, param_map = rename_map
+                else:
+                    name_marker = f"qxname{seed}{index}{ordinal}"
+                    param_map = {}
+                    markers.append(name_marker)
+                arguments: dict[str, Any] = {
+                    param_map.get(key, key): value for key, value in call.function.arguments.items()
+                }
+                arguments_marked, argument_markers = _mark_argument_values(
+                    arguments, seed, index, ordinal
                 )
-                markers.append(name_marker)
+                arguments = cast("dict[str, Any]", arguments_marked)
                 markers.extend(argument_markers)
                 calls.append(
                     ToolCall(
@@ -305,7 +336,7 @@ def _mark_tool_messages(
                 marker = f"qx{seed}{index}t"
                 content = f"{content} {marker}"
                 markers.append(marker)
-            marked.append(ChatTurn(message.role, content, tuple(calls), message.tool_name))
+            marked.append(ChatTurn(message.role, content, tuple(calls), tool_name))
             continue
         marked.append(message)
     return marked, markers
@@ -348,7 +379,7 @@ def _mark_argument_values(
         if isinstance(current, dict):
             return {key: mark(item, str(key)) for key, item in current.items()}
         if isinstance(current, list):
-            return [mark(item, None) for item in current]
+            return [mark(item, key) for item in current]
         return current
 
     return mark(value, None), markers
@@ -360,13 +391,14 @@ def _verified(
     tools: Sequence[ToolDefinition] | None,
     supports_tool_calls: bool,
     null_content: bool,
+    required_fragment: str | None = None,
 ) -> bool:
     """Check that the template really renders tools and tool exchanges.
 
     The candidate is rendered once more with every offered tool re-probed
-    (renamed and described with a sentinel, and its first parameter renamed
-    as well, so a template that ignores the tool list or the schemas is
-    caught), with each call's function name replaced by a sentinel, and
+    (renamed to a sentinel, and its first parameter renamed as well, so a
+    template that ignores the tool list or the schemas is caught), with each
+    call's function name replaced by a sentinel, and
     with sentinel markers injected into the tool messages and every value of
     the call arguments (strings get a suffix, numbers a unique replacement;
     booleans and null cannot carry a marker, so their keys are required to
@@ -378,7 +410,9 @@ def _verified(
     tool history is detected here and falls back to the transcript. A
     sentinel appended to the system message catches templates that silently
     drop it (e.g. one that renders the system prompt only for a trailing
-    user turn).
+    user turn). ``required_fragment`` is text that has to appear in the
+    output as well; the merged system/user candidate uses it to make sure
+    the merged instruction survives the retry.
     """
     candidate = list(candidate)
     system_probe = None
@@ -394,18 +428,21 @@ def _verified(
             break
     probe_tools: list[ToolDefinition] | None = None
     tool_markers: list[str] = []
+    rename: dict[str, tuple[str, dict[str, str]]] = {}
     if tools:
-        # Every offered tool is probed: it is renamed to a sentinel, its
-        # description gets one too, and its first parameter is renamed the
-        # same way. A template that renders only part of the tool list or
-        # only the names (no schema) is detected here.
+        # Every offered tool is probed: it is renamed to a sentinel and its
+        # first parameter is renamed the same way. A template that renders
+        # only part of the tool list or renders the names without the
+        # parameter schema is detected here. The calls in the history are
+        # renamed the same way, so the probe stays consistent with the
+        # schema a strict template validates against.
         probe_tools = []
         for index, tool in enumerate(tools):
             function = tool.function
             name_marker = f"qxtool{secrets.token_hex(4)}{index}"
-            description_marker = f"qxdesc{secrets.token_hex(4)}{index}"
             parameters = function.parameters
             parameter_marker: str | None = None
+            parameter_map: dict[str, str] = {}
             if isinstance(parameters, dict):
                 properties = parameters.get("properties")
                 if isinstance(properties, dict) and properties:
@@ -420,27 +457,30 @@ def _verified(
                         parameters["required"] = [
                             parameter_marker if item == first_key else item for item in required
                         ]
+                    parameter_map = {first_key: parameter_marker}
+            rename[function.name] = (name_marker, parameter_map)
             tool_markers.append(name_marker)
-            tool_markers.append(description_marker)
             if parameter_marker is not None:
                 tool_markers.append(parameter_marker)
             probe_tools.append(
                 ToolDefinition(
                     function=ToolFunction(
                         name=name_marker,
-                        description=f"{function.description} {description_marker}".strip(),
+                        description=function.description,
                         parameters=parameters,
                     )
                 )
             )
     seed = secrets.token_hex(6)
-    marked, markers = _mark_tool_messages(candidate, seed)
+    marked, markers = _mark_tool_messages(candidate, seed, rename)
     if probe_tools is None and not markers and system_probe is None:
         return True
     rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
     squashed = _squash(rendered).lower()
+    if required_fragment is not None and _squash(required_fragment).lower() not in squashed:
+        return False
     if system_probe is not None and system_probe.lower() not in squashed:
         return False
     if any(marker.lower() not in squashed for marker in tool_markers):

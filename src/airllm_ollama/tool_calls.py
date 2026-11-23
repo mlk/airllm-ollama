@@ -108,7 +108,13 @@ def _iter_tags(text: str) -> Iterator[tuple[int, int, bool, str]]:
         if closing:
             index += 1
         name_start = index
-        while index < length and (text[index].isalnum() or text[index] == "-"):
+        # HTML tag names start with an ASCII letter.
+        if index >= length or not (text[index].isascii() and text[index].isalpha()):
+            position = start + 1
+            continue
+        while index < length and (
+            (text[index].isascii() and text[index].isalnum()) or text[index] == "-"
+        ):
             index += 1
         if index == name_start:
             position = start + 1
@@ -287,6 +293,7 @@ def _link_destination_spans(text: str) -> list[tuple[int, int]]:
     definitions (``[label]: destination``) are covered as well.
     """
     regions: list[tuple[int, int]] = []
+    last_close = text.rfind(")")
     for match in re.finditer(r"\]\(", text):
         # Walk back to the matching "[" for the label; a ")(" without a
         # label is not a link. Labels may nest brackets one level deep.
@@ -304,10 +311,15 @@ def _link_destination_spans(text: str) -> list[tuple[int, int]]:
         if label_start == -1:
             continue
         start = match.end()
+        if start > last_close:
+            # No closing paren anywhere after this point: not a link.
+            continue
         depth = 1
-        pos = start
         in_quotes = False
-        while pos < len(text):
+        pos = start
+        end: int | None = None
+        limit = min(len(text), start + 4096)
+        while pos < limit:
             char = text[pos]
             if char == "\\":
                 pos += 2
@@ -326,9 +338,14 @@ def _link_destination_spans(text: str) -> list[tuple[int, int]]:
             elif char == ")":
                 depth -= 1
                 if depth == 0:
+                    end = pos
                     break
             pos += 1
-        regions.append((start, pos))
+        if end is None:
+            # No closing parenthesis within a sane distance: not a link,
+            # so the backticks inside are code, not URL noise.
+            continue
+        regions.append((start, end))
     for match in re.finditer(r"^\[[^\]]*\]:\s*(\S+)", text, re.MULTILINE):
         regions.append((match.start(1), match.end(1)))
     return regions
