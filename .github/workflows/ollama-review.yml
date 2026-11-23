@@ -17,9 +17,13 @@ jobs:
   review:
     # A draft is not ready to be reviewed, and a fork does not get the secrets
     # of the repository — the action would start up without an API key.
+    # Dependabot is skipped as well: GitHub runs the workflows of its pull
+    # requests as if they came from a fork, so they get a read-only token and
+    # no secrets at all.
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

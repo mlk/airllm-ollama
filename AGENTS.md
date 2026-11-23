@@ -156,6 +156,10 @@ Both run weekly.
   request out, so the workflow has no `actions/checkout` step and it is safe to
   run on untrusted forks — the `if` condition skips them anyway, because
   GitHub withholds the secrets of a fork.
+* The pull requests of **Dependabot** are not reviewed either: GitHub runs the
+  workflows of a Dependabot pull request as if it came from a fork, so the job
+  would get a read-only token and no secrets at all. The `if` condition skips
+  `dependabot[bot]`.
 * The conventions of the repository are handed to the model as project
   context: `AGENTS.md`, the `README.md` and `.github/review-guidelines.md`,
   all read at the **base** commit, so a pull request cannot inject its own

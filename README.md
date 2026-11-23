@@ -831,7 +831,10 @@ workflow lives in `.github/workflows/ollama-review.yml`:
   and the assessment of the pull request as a **summary comment**;
 * the conventions of the repository (`AGENTS.md`, this `README.md` and
   `.github/review-guidelines.md`) are read at the **base** commit and handed to
-  the model as project context.
+  the model as project context;
+* the pull requests of Dependabot are not reviewed — GitHub runs the workflows
+  of a Dependabot pull request as if it came from a fork, so the job would get
+  a read-only token and no secrets.
 
 The action needs an API key as the `OLLAMA_API_KEY` secret of the repository —
 create one at [ollama.com/settings/keys](https://ollama.com/settings/keys) and

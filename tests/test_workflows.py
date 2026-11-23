@@ -88,8 +88,12 @@ def test_the_review_is_run_by_the_ollama_action() -> None:
     assert workflow["permissions"]["contents"] == "read"
     assert workflow["permissions"]["pull-requests"] == "write"
     # A push to a draft or a pull request from a fork does not spend a model call.
-    assert "draft == false" in str(workflow["jobs"]["review"]["if"])
-    assert "head.repo.full_name == github.repository" in str(workflow["jobs"]["review"]["if"])
+    guard = str(workflow["jobs"]["review"]["if"])
+    assert "draft == false" in guard
+    assert "head.repo.full_name == github.repository" in guard
+    # Dependabot gets a read-only token and no secrets: its pull requests are
+    # not reviewed at all.
+    assert "dependabot[bot]" in guard
     # A stuck model call fails in minutes, not in the six hours of the runner.
     assert str(workflow["jobs"]["review"]["timeout-minutes"]) == "15"
 
@@ -129,5 +133,8 @@ def test_the_review_reads_the_conventions_of_the_repository() -> None:
 
 def test_the_junie_review_is_gone() -> None:
     """The review does not run on JetBrains Junie any more."""
-    assert not (WORKFLOWS / "code-review.yml").exists()
+    # Every workflow is scanned: a Junie review under another name would keep
+    # running on every pull request.
+    for path in WORKFLOWS.glob("*.yml"):
+        assert "junie" not in path.read_text(encoding="utf-8").lower(), path.name
     assert not (ROOT / ".junie").exists()
