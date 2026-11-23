@@ -938,3 +938,63 @@ def test_a_template_dropping_assistant_content_falls_back() -> None:
 
     assert rendered.text.startswith("User:")
     assert "Tool[get_weather]: 22°C" in rendered.text
+
+
+def test_an_empty_tool_result_is_still_visible_to_the_probe() -> None:
+    """A Zephyr-style template that drops the tool role must be detected."""
+
+    class ToolBlindTokenizer:
+        """Tokenizer double that renders only non-tool messages."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render everything except tool messages."""
+            self.renderings.append(list(messages))
+            return "|".join(
+                str(message["content"])
+                for message in messages
+                if isinstance(message, dict) and message.get("role") != "tool"
+            )
+
+    messages = [
+        ChatTurn("user", "Weather?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(ToolBlindTokenizer(), messages, TOOLS)
+
+    assert "Tool[get_weather]:" in rendered.text
+
+
+def test_a_template_that_ignores_tools_falls_back_even_if_the_user_names_the_tool() -> None:
+    class NameEchoTokenizer:
+        """Render the messages and the user's mention without offering tools."""
+
+        def __init__(self) -> None:
+            """Initialise the recording list."""
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Echo the messages, silently dropping the tools keyword."""
+            self.renderings.append(list(messages))
+            return "|".join(
+                str(message.get("content", "")) for message in messages if isinstance(message, dict)
+            )
+
+    messages = [ChatTurn("user", "Please call get_weather for Paris")]
+
+    rendered = render_chat(NameEchoTokenizer(), messages, TOOLS)
+
+    assert "Tools: [" in rendered.text
