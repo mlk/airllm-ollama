@@ -663,3 +663,55 @@ def test_a_html_tag_inside_a_call_argument_keeps_the_next_call() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["save", "get_weather"]
+
+
+def test_a_think_block_with_a_commented_closing_delimiter_is_not_executable() -> None:
+    raw = (
+        "<think>Example: <!-- </think> --> "
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call> </think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_malformed_call_with_an_escaped_closing_marker_swallows_the_next_block() -> None:
+    raw = (
+        '<tool_call>bad \\</tool_call> '
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call> </tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_two_calls_with_backticks_in_their_arguments_are_both_parsed() -> None:
+    raw = (
+        '<tool_call>{"name": "save", "arguments": {"text": "`"}}</tool_call>'
+        '<tool_call>{"name": "save", "arguments": {"text": "`"}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["save", "save"]
+
+
+def test_a_call_inside_an_unterminated_script_is_not_executed() -> None:
+    raw = 'Example: <script>var x = 1;\n<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_call_after_a_closed_script_is_parsed() -> None:
+    raw = (
+        "Example: <script>var x = 1;</script>\n"
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
