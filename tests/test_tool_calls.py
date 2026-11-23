@@ -923,3 +923,52 @@ def test_many_unterminated_links_do_not_hang() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert calls == []
+
+
+def test_a_malformed_call_with_a_quoted_close_does_not_close_the_reasoning() -> None:
+    raw = (
+        '<think><tool_call>{"name":"f","arguments":{"x":"</think>"},}</tool_call> '
+        'Never <tool_call>{"name": "delete_file"}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_link_title_with_a_closing_delimiter_keeps_the_reasoning_open() -> None:
+    raw = (
+        '<think>[link](https://example.com "</think>") '
+        'Never <tool_call>{"name":"delete_file"}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_prompt_ending_with_unterminated_fence_and_think_prefill_counts_as_think() -> None:
+    from airllm_ollama.tool_calls import prompt_ends_in_think
+
+    prompt = (
+        "user: look at this\n"
+        "```python\n"
+        "x = 1  # unclosed fence swallows the rest\n"
+        "assistant: <think>\n"
+    )
+
+    assert prompt_ends_in_think(prompt)
+
+
+def test_a_prompt_with_a_closed_fence_and_think_prefill_counts_as_think() -> None:
+    from airllm_ollama.tool_calls import prompt_ends_in_think
+
+    prompt = "user: look\n```python\nx = 1\n```\nassistant: <think>\n"
+
+    assert prompt_ends_in_think(prompt)
+
+
+def test_a_prompt_without_prefill_is_not_think() -> None:
+    from airllm_ollama.tool_calls import prompt_ends_in_think
+
+    assert not prompt_ends_in_think("user: hello\nassistant: ")

@@ -351,7 +351,10 @@ def _mark_tool_messages(
                 original = call.function.name
                 rename_map = rename.get(original)
                 if rename_map is not None:
-                    name_marker, param_map, parameters_schema, probe_key, probe_value = rename_map
+                    name_marker, param_map, parameters_schema, probe_key, _shared_value = rename_map
+                    # Each call carries its own probe value: a template that
+                    # renders only one of two identical calls cannot pass.
+                    probe_value = f"qxval{seed}{index}{ordinal}"
                 else:
                     name_marker = f"qxname{seed}{index}{ordinal}"
                     param_map = {}

@@ -505,18 +505,26 @@ def _segments(text: str) -> list[tuple[int, int]]:
     return segments
 
 
-def _markdown_blocks(text: str) -> list[tuple[int, int]]:
-    """Return the fence/code regions the Markdown parser reports."""
+def _markdown_blocks(text: str, fences_to_eof_close: bool = False) -> list[tuple[int, int]]:
+    """Return the fence/code regions the Markdown parser reports.
+
+    With ``fences_to_eof_close`` set, a fence that runs to the end of the
+    text does not mask anything — an unterminated fence in the history
+    must not hide the assistant's think prefill at the tail.
+    """
     try:
         tokens = _MARKDOWN.parse(text)
     except Exception:
-        return [(0, len(text))]
+        return [(0, len(text))] if not fences_to_eof_close else []
     line_starts = _line_starts(text)
+    last_line = len(line_starts) - 1
     regions: list[tuple[int, int]] = []
     for token in tokens:
         if token.map is None:
             continue
         if token.type in ("fence", "code_block", "html_block"):
+            if fences_to_eof_close and token.map[1] >= last_line:
+                continue
             regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
     return regions
 
@@ -560,9 +568,16 @@ def _inline_spans(
     return regions
 
 
-def _call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Return the spans of the well-formed calls outside the blocked regions."""
-    spans: list[tuple[int, int]] = []
+def _parse_call_spans(
+    text: str, blocked: list[tuple[int, int]]
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Split the call spans into the valid calls and the malformed blocks.
+
+    Both are opaque to the region scan; the malformed ones are dropped from
+    the extracted calls later, while the valid ones are executed.
+    """
+    valid: list[tuple[int, int]] = []
+    malformed: list[tuple[int, int]] = []
     decoder = _strict_decoder()
     blocked_index = 0
     position = 0
@@ -576,17 +591,26 @@ def _call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, in
             found = _parse_call(text, position + len(_OPEN), decoder)
             if found is not None:
                 _, end = found
-                spans.append((position, end))
+                valid.append((position, end))
                 position = end
                 continue
-            position = _skip_block(text, position)
+            end = _skip_block(text, position)
+            malformed.append((position, end))
+            position = end
             continue
         position += 1
-    return spans
+    return valid, malformed
+
+
+def _call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the valid calls outside the blocked regions."""
+    valid, _malformed = _parse_call_spans(text, blocked)
+    return valid
 
 
 def _pre_think(
     text: str,
+    fences_to_eof_close: bool = False,
 ) -> tuple[
     str,
     list[tuple[int, int]],
@@ -600,22 +624,28 @@ def _pre_think(
     """Compute the regions up to and including the reasoning mask.
 
     Returns the masked text, the fenced/code regions, the tag spans, the
-    calls, the inline code spans, the comment regions and the raw-text
-    regions. Shared by the region computation and by the prompt scan.
+    opaque call spans (valid and malformed), the inline code spans, the
+    comment regions and the raw-text regions. Shared by the region
+    computation and by the prompt scan. With ``fences_to_eof_close`` the
+    fences running to the end of the text are not masked, so a prompt's
+    unterminated fence cannot hide the think prefill at its tail.
     """
     masked = _mask_think(text)
-    fences = _markdown_blocks(masked)
+    fences = _markdown_blocks(masked, fences_to_eof_close)
     tags = _tag_regions(text, fences)
     links = _link_destination_spans(text)
-    calls = _call_spans(text, _merge_regions(fences + tags + links))
+    # Malformed call blocks are opaque too: a quoted `</think>` inside one
+    # is not a reasoning delimiter and its backticks are not code.
+    calls, malformed = _parse_call_spans(text, _merge_regions(fences + tags + links))
+    opaque = _merge_regions([*calls, *malformed])
     segments = _segments(masked)
     # Inline code spans come before comments and HTML blocks: a comment
     # opener inside a code span is an example, not a comment. Backticks
     # inside link destinations are part of the URL, not code delimiters.
-    inline = _inline_spans(text, _merge_regions(fences + tags + calls + links), segments)
-    comments = _comment_regions(text, _merge_regions(fences + tags + calls + inline))
-    raw = _raw_text_regions(text, _merge_regions(fences + comments + calls + inline))
-    return masked, fences, tags, calls, inline, comments, raw, links
+    inline = _inline_spans(text, _merge_regions(fences + tags + links + opaque), segments)
+    comments = _comment_regions(text, _merge_regions(fences + tags + inline + opaque))
+    raw = _raw_text_regions(text, _merge_regions(fences + comments + inline + opaque))
+    return masked, fences, tags, opaque, inline, comments, raw, links
 
 
 def _code_regions(text: str, in_think: bool = False) -> list[tuple[int, int]]:
@@ -632,7 +662,9 @@ def _code_regions(text: str, in_think: bool = False) -> list[tuple[int, int]]:
     """
     _masked, fences, tags, calls, inline, comments, raw, links = _pre_think(text)
     think = _think_regions(
-        text, _merge_regions(fences + tags + calls + inline + comments + raw), in_think
+        text,
+        _merge_regions(fences + tags + calls + inline + comments + raw + links),
+        in_think,
     )
     blocks = _merge_regions(fences + comments + think)
     html = _html_regions(text, _merge_regions(blocks + calls + inline))
@@ -650,8 +682,10 @@ def prompt_ends_in_think(text: str) -> bool:
     inside a reasoning block that was opened in the prompt. Callers use
     this to carry that state into :func:`extract_tool_calls`.
     """
-    _masked, fences, tags, calls, inline, comments, raw, _links = _pre_think(text)
-    blocked = _merge_regions(fences + tags + calls + inline + comments + raw)
+    _masked, fences, tags, calls, inline, comments, raw, links = _pre_think(
+        text, fences_to_eof_close=True
+    )
+    blocked = _merge_regions(fences + tags + calls + inline + comments + raw + links)
     depth = 0
     for match in _THINK_TAG.finditer(text):
         if _is_blocked(blocked, match.start(), match.end()):
@@ -662,7 +696,12 @@ def prompt_ends_in_think(text: str) -> bool:
             depth = max(0, depth - 1)
         else:
             depth += 1
-    return depth > 0
+    if depth > 0:
+        return True
+    # The prefill lives at the very end of the prompt: if the text ends
+    # with an opening think tag, the generation starts inside one — no
+    # matter what the history markup looks like.
+    return re.search(r"<think\b[^>]*>\s*$", text, re.IGNORECASE) is not None
 
 
 def extract_tool_calls(text: str, *, in_think: bool = False) -> tuple[str, list[ToolCall]]:

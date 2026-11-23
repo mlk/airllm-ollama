@@ -1607,3 +1607,49 @@ def test_a_template_rendering_only_the_tools_falls_back_to_the_transcript() -> N
     rendered = render_chat(SchemaOnlyTokenizer(), messages, TOOLS)
 
     assert rendered.text.startswith("Tools:")
+
+
+def test_parallel_calls_to_the_same_tool_get_distinct_probe_values() -> None:
+    """Rendering only the first of two same-tool calls must fail verification."""
+
+    class FirstCallOnlyTokenizer:
+        """Tokenizer that renders only the first tool call of an assistant turn."""
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            tools = kwargs.get("tools") or []
+            parts = [json.dumps(tools, default=str)]
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                tool_calls = message.get("tool_calls", [])
+                for call in tool_calls[:1]:
+                    parts.append(json.dumps(call["function"], sort_keys=True))
+                parts.append(str(message.get("content", "")))
+                parts.append(str(message.get("tool_name", "")))
+            return "\n".join(parts)
+
+    messages = [
+        ChatTurn("user", "Weather in Paris and Berlin?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(
+                        name="get_weather", arguments={"city": "Paris", "units": "C"}
+                    )
+                ),
+                ToolCall(
+                    function=ToolCallFunction(
+                        name="get_weather", arguments={"city": "Berlin", "units": "C"}
+                    )
+                ),
+            ),
+        ),
+        ChatTurn("tool", "Paris: 21", tool_name="get_weather"),
+        ChatTurn("tool", "Berlin: 18", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(FirstCallOnlyTokenizer(), messages, TOOLS)
+
+    assert rendered.text.startswith("Tools:")
