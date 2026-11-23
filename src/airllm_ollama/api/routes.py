@@ -231,13 +231,9 @@ async def chat(request: ChatRequest) -> ChatResponse | StreamingResponse:
     if tool_calls:
         # A message that calls a tool carries no content; a malformed block
         # the parser could not extract is kept so it is not silently lost.
-        # Ollama has no tool_calls done reason, so the turn ends with
-        # "stop".
         leftover = content.strip()
         content = leftover if ("<tool_call" in leftover or "</tool_call" in leftover) else ""
-        done_reason = "stop"
-    else:
-        done_reason = generation_done_reason(result, options)
+    done_reason = generation_done_reason(result, options)
 
     settings = get_settings()
     keep_alive = parse_keep_alive(

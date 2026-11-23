@@ -110,23 +110,30 @@ def has_tool_material(messages: Sequence[ChatTurn]) -> bool:
     return any(message.tool_calls or message.role == "tool" for message in messages)
 
 
-def _template_supports_tool_calls(tokenizer: object) -> bool:
-    """Tell whether the chat template of the model renders tool calls.
+def _template_supports_tool_calls(raw: object, tool_use_selected: bool) -> bool:
+    """Tell whether the chat template that gets selected renders tool calls.
 
-    Templates that render tool calls reference ``tool_calls`` (Qwen, Hermes,
-    ...). A template that does not (SmolLM3 renders only the content of an
-    assistant message) silently drops the calls from the history — for those
-    the calls are inlined into the content instead, in the same ``<tool_call>``
-    format the model was trained to emit.
+    A template that renders tool calls references ``tool_calls`` (Qwen,
+    Hermes, ...). A template that does not — e.g. SmolLM3 renders only the
+    content of an assistant message — silently drops the calls from the
+    history; for those the calls are inlined into the content instead, in
+    the same ``<tool_call>`` format the model was trained to emit.
+
+    Args:
+        raw: The ``chat_template`` attribute of the tokenizer.
+        tool_use_selected: Whether the tool-aware variant of the template is
+            selected (a dict of named templates is used by transformers when
+            tools are offered — see ``apply_chat_template``).
     """
-    raw = getattr(tokenizer, "chat_template", None)
     if raw is None:
         # Unknown template source: assume it renders the tool calls.
         return True
     if isinstance(raw, dict):
-        # A dict of named templates (e.g. Llama 3.1): the tool-aware variant
-        # renders the tool calls.
-        return any("tool_calls" in str(value) for value in raw.values())
+        # A dict of named templates (e.g. Llama 3.1): transformers selects
+        # ``tool_use`` when tools are passed and ``default`` otherwise.
+        key = "tool_use" if tool_use_selected else "default"
+        candidate = raw.get(key, next(iter(raw.values()), ""))
+        return "tool_calls" in str(candidate)
     return "tool_calls" in str(raw)
 
 
@@ -215,15 +222,18 @@ def apply_chat_template(
     template = getattr(tokenizer, "apply_chat_template", None)
     if template is None:
         return None
+    offered = tools if tools else None
     render = cast("ChatTemplate", template)
-    supports_tool_calls = _template_supports_tool_calls(tokenizer)
-    rendered = _render_with_template(render, messages, tools, supports_tool_calls)
+    supports_tool_calls = _template_supports_tool_calls(
+        getattr(tokenizer, "chat_template", None), offered is not None
+    )
+    rendered = _render_with_template(render, messages, offered, supports_tool_calls)
     if rendered is not None:
         return rendered
     merged = _merge_system_message(messages)
     if merged is None:
         return None
-    return _render_with_template(render, merged, tools, supports_tool_calls)
+    return _render_with_template(render, merged, offered, supports_tool_calls)
 
 
 def _render_with_template(

@@ -64,9 +64,11 @@ def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
             break
         found = _parse_call(text, start + len(_OPEN), decoder)
         if found is None:
-            # Not a valid call: leave the text untouched and keep looking
-            # after this opening marker.
-            position = start + len(_OPEN)
+            # Not a valid call: the whole block is dead text. Skipping to the
+            # next closing marker keeps a nested marker inside the malformed
+            # block from being picked up as a call of its own.
+            closing = text.find(_CLOSE, start)
+            position = len(text) if closing == -1 else closing + len(_CLOSE)
             continue
         call, end = found
         calls.append(call)
@@ -155,6 +157,10 @@ def _to_tool_call(data: object) -> ToolCall | None:
         try:
             arguments = _strict_decoder().decode(arguments)
         except ValueError:
+            return None
+        # The escaped string may decode to lone surrogates; the check on the
+        # outer object does not see them.
+        if _has_unpaired_surrogate(arguments):
             return None
     if arguments is None:
         arguments = {}

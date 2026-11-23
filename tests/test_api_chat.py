@@ -324,11 +324,15 @@ def test_chat_returns_the_tool_calls_of_the_model(client: TestClient, engine: An
     assert payload["done_reason"] == "stop"
 
 
-def test_chat_reports_stop_when_a_tool_call_is_returned_at_the_token_limit(
+def test_chat_reports_length_when_a_tool_call_is_returned_at_the_token_limit(
     client: TestClient, engine: Any
 ) -> None:
+    """A complete call followed by truncation reports length, not stop."""
     engine.return_value.generate_chat.return_value = GenerationResult(
-        text='<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>',
+        text=(
+            '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call> '
+            '<tool_call>{"name": "get_time", "argume'
+        ),
         prompt_tokens=7,
         generated_tokens=16,
         total_duration_ns=4_000,
@@ -346,8 +350,37 @@ def test_chat_reports_stop_when_a_tool_call_is_returned_at_the_token_limit(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert [call["function"]["name"] for call in payload["message"]["tool_calls"]] == [
+        "get_weather"
+    ]
+    # The truncated block is kept in the content and the reason is length.
+    assert '<tool_call>{"name": "get_time"' in payload["message"]["content"]
+    assert payload["done_reason"] == "length"
+
+
+def test_chat_reports_stop_for_a_tool_call_within_the_limit(
+    client: TestClient, engine: Any
+) -> None:
+    engine.return_value.generate_chat.return_value = GenerationResult(
+        text='<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>',
+        prompt_tokens=7,
+        generated_tokens=16,
+        total_duration_ns=4_000,
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "model": MODEL,
+            "messages": MESSAGES,
+            "tools": TOOLS,
+            "options": {"num_predict": 64},
+        },
+    )
+
+    payload = response.json()
     assert payload["done_reason"] == "stop"
+    assert payload["message"]["content"] == ""
 
 
 def test_chat_omits_the_tool_calls_when_the_model_does_not_call_a_tool(

@@ -488,3 +488,42 @@ def test_the_template_receives_an_empty_description_when_none_is_declared() -> N
     )
 
     assert tokenizer.tools[0]["function"]["description"] == ""
+
+
+class DictTemplateTokenizer:
+    """Tokenizer double with a dict of named templates (Llama 3.1 style)."""
+
+    def __init__(self) -> None:
+        """Initialise the recording lists."""
+        self.renderings: list[list[dict[str, Any]]] = []
+        self.chat_template = {
+            "default": "{{ message.content }}",
+            "tool_use": "{{ message.tool_calls }}",
+        }
+
+    def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+        """Render the messages, like a named-template tokenizer would."""
+        self.renderings.append(list(messages))
+        return "rendered"
+
+
+def test_a_dict_template_without_tools_selects_the_default_branch() -> None:
+    """The default branch renders content only, so the calls are inlined."""
+    tokenizer = DictTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES)
+
+    assistant = tokenizer.renderings[0][1]
+    assert "tool_calls" not in assistant
+    assert "<tool_call>" in assistant["content"]
+
+
+def test_a_dict_template_with_tools_selects_the_tool_use_branch() -> None:
+    """The tool_use branch renders the calls, so they stay structured."""
+    tokenizer = DictTemplateTokenizer()
+
+    render_chat(tokenizer, TOOL_MESSAGES, tools=TOOLS)
+
+    assistant = tokenizer.renderings[0][1]
+    assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert "<tool_call>" not in assistant["content"]

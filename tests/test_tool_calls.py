@@ -207,3 +207,42 @@ def test_a_surrogate_pair_is_accepted() -> None:
 
     assert text == ""
     assert calls[0].function.arguments == {"text": "😀"}
+
+
+def test_a_nested_marker_inside_a_malformed_block_is_not_a_call() -> None:
+    raw = (
+        '<tool_call>{"arguments": <tool_call>'
+        '{"name": "delete_file", "arguments": {}}</tool_call>}</tool_call>'
+    )
+
+    text, calls = extract_tool_calls(raw)
+
+    assert calls == []
+    assert text == raw
+
+
+def test_an_independent_call_after_a_malformed_block_is_still_parsed() -> None:
+    _, calls = extract_tool_calls(
+        '<tool_call>{"broken": <tool_call>{"name": "delete_file"}</tool_call>}</tool_call>'
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+    )
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_lone_surrogate_in_a_json_encoded_arguments_string_is_rejected() -> None:
+    raw = '<tool_call>{"name": "f", "arguments": "{\\"text\\": \\"\\ud800\\"}"}</tool_call>'
+
+    text, calls = extract_tool_calls(raw)
+
+    assert text == raw
+    assert calls == []
+
+
+def test_a_surrogate_pair_in_a_json_encoded_arguments_string_is_accepted() -> None:
+    text, calls = extract_tool_calls(
+        '<tool_call>{"name": "f", "arguments": "{\\"text\\": \\"\\ud83d\\ude00\\"}"}</tool_call>'
+    )
+
+    assert text == ""
+    assert calls[0].function.arguments == {"text": "😀"}
