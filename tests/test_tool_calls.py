@@ -678,7 +678,7 @@ def test_a_think_block_with_a_commented_closing_delimiter_is_not_executable() ->
 
 def test_a_malformed_call_with_an_escaped_closing_marker_swallows_the_next_block() -> None:
     raw = (
-        '<tool_call>bad \\</tool_call> '
+        "<tool_call>bad \\</tool_call> "
         '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call> </tool_call>'
     )
 
