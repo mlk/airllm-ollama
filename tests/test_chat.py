@@ -1109,3 +1109,99 @@ def test_tool_results_without_a_matching_call_keep_their_order() -> None:
         "other",
         "another",
     ]
+
+
+def test_tool_results_align_with_calls_when_only_one_is_named() -> None:
+    """An unnamed result takes the slot of its call, the named ones keep order."""
+    tokenizer = FakeToolTokenizer()
+    messages = [
+        ChatTurn("user", "Compare the cities"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(function=ToolCallFunction(name="alpha", arguments={})),
+                ToolCall(function=ToolCallFunction(name="beta", arguments={})),
+            ),
+        ),
+        ChatTurn("tool", "unnamed alpha result"),
+        ChatTurn("tool", "beta result", tool_name="beta"),
+    ]
+
+    render_chat(tokenizer, messages)
+
+    tool_messages = [message for message in tokenizer.renderings[-1] if message["role"] == "tool"]
+    assert [message["content"] for message in tool_messages] == [
+        "unnamed alpha result",
+        "beta result",
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == ["call00001", "call00002"]
+
+
+def test_a_template_that_transforms_the_system_content_is_accepted() -> None:
+    """A template rendering `content | upper` still sees the system instruction."""
+
+    class UpperTokenizer:
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render every message uppercased, like a Jinja `upper` filter."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", "")).upper()
+                for message in messages
+                if isinstance(message, dict)
+            )
+
+    tokenizer = UpperTokenizer()
+
+    rendered = render_chat(tokenizer, [ChatTurn("system", "Be brief."), ChatTurn("user", "Hello")])
+
+    assert rendered.text == "BE BRIEF.\nHELLO"
+
+
+def test_a_template_that_validates_the_arguments_accepts_the_marked_history() -> None:
+    """The verification render must not break templates with strict schemas."""
+
+    class StrictTokenizer:
+        """Tokenizer that rejects any argument keys outside the schema."""
+
+        def __init__(self) -> None:
+            self.renderings: list[list[dict[str, Any]]] = []
+
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Reject argument keys other than the declared ones."""
+            for message in messages:
+                for call in message.get("tool_calls", []):
+                    unexpected = set(call["function"]["arguments"]) - {"city"}
+                    if unexpected:
+                        raise ValueError("unexpected arguments")
+            self.renderings.append(list(messages))
+            return (
+                "\n".join(
+                    json.dumps(call["function"])
+                    for message in messages
+                    for call in message.get("tool_calls", [])
+                )
+                or "ok"
+            )
+
+    tokenizer = StrictTokenizer()
+    messages = [
+        ChatTurn("user", "Weather in Paris?"),
+        ChatTurn(
+            "assistant",
+            "",
+            tool_calls=(
+                ToolCall(
+                    function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"})
+                ),
+            ),
+        ),
+        ChatTurn("tool", "21 degrees", tool_name="get_weather"),
+    ]
+
+    rendered = render_chat(tokenizer, messages, TOOLS)
+
+    assert "get_weather" in rendered.text

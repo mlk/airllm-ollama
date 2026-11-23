@@ -266,7 +266,10 @@ def _mark_tool_messages(
     detected by looking for them in its output. Every tool message is
     marked, including ones with empty content — a template that ignores the
     tool role must not pass verification just because there was nothing to
-    interpolate.
+    interpolate. Each call's function name is replaced with a sentinel, and
+    the first string argument (if any) carries one too — no extra argument
+    keys are added, so the marked call stays valid for templates that
+    validate the arguments against the schema.
     """
     marked: list[ChatTurn] = []
     markers: list[str] = []
@@ -283,17 +286,22 @@ def _mark_tool_messages(
         if message.tool_calls:
             calls = []
             for ordinal, call in enumerate(message.tool_calls):
-                marker = f"qx{seed}{index}x{ordinal}q"
-                arguments = {**call.function.arguments, f"qx{seed}": marker}
+                name_marker = f"qxname{seed}{index}{ordinal}"
+                argument_marker = f"qxarg{seed}{index}{ordinal}"
+                arguments, marked_argument = _sentinel_in_first_string(
+                    dict(call.function.arguments), argument_marker
+                )
+                markers.append(name_marker)
+                if marked_argument:
+                    markers.append(argument_marker)
                 calls.append(
                     ToolCall(
                         function=ToolCallFunction(
-                            name=call.function.name,
+                            name=name_marker,
                             arguments=arguments,
                         )
                     )
                 )
-                markers.append(marker)
             content = message.content
             if content.strip():
                 marker = f"qx{seed}{index}t"
@@ -305,6 +313,33 @@ def _mark_tool_messages(
     return marked, markers
 
 
+def _sentinel_in_first_string(value: object, sentinel: str) -> tuple[object, bool]:
+    """Append ``sentinel`` to the first string found, depth-first.
+
+    Returns the (possibly) updated value and whether a string was found.
+    The structure of the arguments is otherwise left unchanged.
+    """
+    if isinstance(value, str):
+        return value + sentinel, True
+    if isinstance(value, dict):
+        for key, item in value.items():
+            replaced, found = _sentinel_in_first_string(item, sentinel)
+            if found:
+                updated = dict(value)
+                updated[key] = replaced
+                return updated, True
+        return value, False
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            replaced, found = _sentinel_in_first_string(item, sentinel)
+            if found:
+                updated_list = list(value)
+                updated_list[index] = replaced
+                return updated_list, True
+        return value, False
+    return value, False
+
+
 def _verified(
     render: ChatTemplate,
     candidate: Sequence[ChatTurn],
@@ -314,14 +349,19 @@ def _verified(
 ) -> bool:
     """Check that the template really renders tools and tool exchanges.
 
-    The candidate is rendered once more with a synthetic probe tool and with
-    sentinel markers injected into the tool messages and call arguments.
-    The sentinels are unambiguous markers that survive every tool argument
-    serialization (JSON, dict literal, ``<parameter>`` blocks), so a
-    template that drops the offered tools or a part of the tool history is
-    detected here and falls back to the transcript. A sentinel appended to
-    the system message catches templates that silently drop it (e.g. one
-    that renders the system prompt only for a trailing user turn).
+    The candidate is rendered once more with the first offered tool
+    re-probed (renamed and described with a sentinel, so a template that
+    ignores the tool list is caught), with each call's function name
+    replaced by a sentinel, and with sentinel markers injected into the
+    tool messages and the first string of the call arguments. The call
+    arguments are otherwise left untouched, so the marked call stays valid
+    for templates that validate arguments against the schema. The sentinels
+    are unambiguous markers that survive every tool argument serialization
+    (JSON, dict literal, ``<parameter>`` blocks), so a template that drops
+    the offered tools or a part of the tool history is detected here and
+    falls back to the transcript. A sentinel appended to the system message
+    catches templates that silently drop it (e.g. one that renders the
+    system prompt only for a trailing user turn).
     """
     candidate = list(candidate)
     system_probe = None
@@ -335,43 +375,41 @@ def _verified(
                 message.tool_name,
             )
             break
+    probe_tools: list[ToolDefinition] | None = None
+    tool_probe = None
+    description_probe = None
     if tools:
-        probe = f"qxprobe{secrets.token_hex(4)}"
-        parameter = f"qxprobearg{secrets.token_hex(4)}"
-        probe_tools: list[ToolDefinition] | None = [
-            *tools,
+        first = tools[0]
+        tool_probe = f"qxtool{secrets.token_hex(4)}"
+        description_probe = f"qxdesc{secrets.token_hex(4)}"
+        first_function = first.function
+        probe_tools = [
             ToolDefinition(
                 function=ToolFunction(
-                    name=probe,
-                    description="Synthetic probe to detect templates that ignore tools.",
-                    parameters={"type": "object", "properties": {parameter: {"type": "string"}}},
+                    name=tool_probe,
+                    description=(f"{first_function.description} {description_probe}").strip(),
+                    parameters=first_function.parameters,
                 )
             ),
+            *tools[1:],
         ]
-    else:
-        probe = None
-        parameter = None
-        probe_tools = None
     seed = secrets.token_hex(6)
     marked, markers = _mark_tool_messages(candidate, seed)
-    # Each tool call's function name must survive in the output, otherwise
-    # the model sees call arguments with no function to apply them to.
-    for message in candidate:
-        for call in message.tool_calls:
-            markers.append(call.function.name)
     if probe_tools is None and not markers and system_probe is None:
         return True
     rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
-    squashed = _squash(rendered)
-    if system_probe is not None and system_probe not in squashed:
+    squashed = _squash(rendered).lower()
+    if system_probe is not None and system_probe.lower() not in squashed:
         return False
-    if probe is not None and (
-        parameter is None or probe not in squashed or parameter not in squashed
+    if (
+        tool_probe is not None
+        and description_probe is not None
+        and (tool_probe.lower() not in squashed or description_probe.lower() not in squashed)
     ):
         return False
-    return all(marker in squashed for marker in markers)
+    return all(marker.lower() in squashed for marker in markers)
 
 
 def _render_with_string_arguments(
@@ -473,7 +511,7 @@ def _order_tool_results(payload: list[dict[str, object]]) -> None:
     in the call's position, the remaining results keep their relative
     order. Calls and results without names keep their client-given order.
     """
-    pending: list[str] = []
+    call_names: list[str] = []
     index = 0
     while index < len(payload):
         message = payload[index]
@@ -482,7 +520,7 @@ def _order_tool_results(payload: list[dict[str, object]]) -> None:
             for call in cast("list[dict[str, Any]]", calls):
                 function = call.get("function")
                 name = function.get("name") if isinstance(function, dict) else ""
-                pending.append(str(name))
+                call_names.append(str(name))
             index += 1
             continue
         if message.get("role") != "tool":
@@ -492,20 +530,40 @@ def _order_tool_results(payload: list[dict[str, object]]) -> None:
         while end < len(payload) and payload[end].get("role") == "tool":
             end += 1
         run = payload[index:end]
+        pending = list(call_names)
         used = [False] * len(run)
-        ordered: list[dict[str, object]] = []
-        for name in list(pending):
+        assigned: list[int | None] = [None] * len(pending)
+        # First pass: each named call claims its name-matching result.
+        for call_index, name in enumerate(pending):
+            if not name:
+                continue
             for index_in_run, item in enumerate(run):
                 if used[index_in_run]:
                     continue
-                if str(item.get("tool_name") or "") != name:
-                    continue
-                used[index_in_run] = True
-                ordered.append(item)
-                pending.remove(name)
-                break
+                if str(item.get("tool_name") or "") == name:
+                    used[index_in_run] = True
+                    assigned[call_index] = index_in_run
+                    break
+        # Second pass: unmatched calls take the remaining results in order,
+        # keeping the run's positions aligned with the calls.
+        for call_index, _name in enumerate(pending):
+            if assigned[call_index] is not None:
+                continue
+            for index_in_run in range(len(run)):
+                if not used[index_in_run]:
+                    used[index_in_run] = True
+                    assigned[call_index] = index_in_run
+                    break
+        ordered: list[dict[str, object]] = []
+        for assigned_index in assigned:
+            if assigned_index is not None:
+                ordered.append(run[assigned_index])
+                used[assigned_index] = True
         ordered.extend(item for position, item in enumerate(run) if not used[position])
         payload[index:end] = ordered
+        # The pending calls are consumed by this run: later runs belong
+        # to later batches of calls.
+        call_names.clear()
         index = end
 
 

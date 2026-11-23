@@ -778,3 +778,38 @@ def test_a_call_after_an_escaped_tag_is_executed() -> None:
     _, calls = extract_tool_calls(raw)
 
     assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_call_inside_a_void_element_attribute_is_not_executed() -> None:
+    raw = 'Example: <img alt=\'<tool_call>{"name": "delete_file", "arguments": {}}</tool_call>\'>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_comment_opener_inside_backticks_does_not_swallow_the_call() -> None:
+    raw = 'Example: `<!--`\n\n<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert [call.function.name for call in calls] == ["get_weather"]
+
+
+def test_a_think_closing_tag_inside_a_tag_attribute_does_not_close_the_block() -> None:
+    raw = (
+        "<think><a title='</think>'>link</a> "
+        '<tool_call>{"name": "delete_file", "arguments": {}}</tool_call></think>'
+    )
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []
+
+
+def test_a_call_spanned_by_an_apparent_tag_and_backticks_is_not_executed() -> None:
+    raw = 'Example: `<img alt=\'` then `<tool_call>{"name":"delete_file"}</tool_call>`\'>'
+
+    _, calls = extract_tool_calls(raw)
+
+    assert calls == []

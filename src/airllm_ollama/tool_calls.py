@@ -106,6 +106,8 @@ def _comment_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[in
     """Return the spans of the HTML comments, honouring the blocked regions."""
     regions: list[tuple[int, int]] = []
     for match in re.finditer(r"<!--", text):
+        if _is_escaped(text, match.start()):
+            continue
         if _is_blocked(blocked, match.start(), match.start() + 4):
             continue
         end = text.find("-->", match.end())
@@ -377,20 +379,21 @@ def _code_regions(text: str) -> list[tuple[int, int]]:
     """
     masked = _mask_think(text)
     fences = _markdown_blocks(masked)
-    tag_regions = _tag_regions(text, fences)
-    calls = _call_spans(text, _merge_regions(fences + tag_regions))
-    comments = _comment_regions(text, _merge_regions(fences + calls))
-    blocks = _merge_regions(fences + comments)
+    # Tag spans are needed early: a call inside a tag's attribute value is
+    # markup, never an action.
+    tags = _tag_regions(text, fences)
+    calls = _call_spans(text, _merge_regions(fences + tags))
     segments = _segments(masked)
-    # Inline spans pair backticks whose positions are outside calls and
-    # blocks; a pair that opens before a call and closes after it covers
-    # the call, and the call is dropped below.
-    inline = _inline_spans(text, _merge_regions(blocks + calls + tag_regions), segments)
-    think = _think_regions(text, _merge_regions(blocks + inline + calls))
-    blocks = _merge_regions(blocks + think)
+    # Inline code spans come before comments and HTML blocks: a comment
+    # opener inside a code span is an example, not a comment.
+    inline = _inline_spans(text, _merge_regions(fences + tags + calls), segments)
+    comments = _comment_regions(text, _merge_regions(fences + tags + calls + inline))
+    think = _think_regions(text, _merge_regions(fences + tags + calls + inline + comments))
+    blocks = _merge_regions(fences + comments + think)
     html = _html_regions(text, _merge_regions(blocks + calls + inline))
-    blocking = _merge_regions(blocks + inline + html)
-    return blocking
+    # Tag spans stay in the blocking set: a call inside a tag (for instance
+    # inside a void element's attribute) never executes.
+    return _merge_regions(blocks + inline + html + tags)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
