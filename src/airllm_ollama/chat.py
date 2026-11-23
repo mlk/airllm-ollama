@@ -323,28 +323,37 @@ def _verified(
     """
     if tools:
         probe = f"qxprobe{secrets.token_hex(4)}"
+        parameter = f"qxprobearg{secrets.token_hex(4)}"
         probe_tools: list[ToolDefinition] | None = [
             *tools,
             ToolDefinition(
                 function=ToolFunction(
                     name=probe,
                     description="Synthetic probe to detect templates that ignore tools.",
-                    parameters={"type": "object", "properties": {}},
+                    parameters={"type": "object", "properties": {parameter: {"type": "string"}}},
                 )
             ),
         ]
     else:
         probe = None
+        parameter = None
         probe_tools = None
     seed = secrets.token_hex(6)
     marked, markers = _mark_tool_messages(candidate, seed)
+    # Each tool call's function name must survive in the output, otherwise
+    # the model sees call arguments with no function to apply them to.
+    for message in candidate:
+        for call in message.tool_calls:
+            markers.append(call.function.name)
     if probe_tools is None and not markers:
         return True
     rendered = _render_with_template(render, marked, probe_tools, supports_tool_calls, null_content)
     if rendered is None:
         return False
     squashed = _squash(rendered)
-    if probe is not None and probe not in squashed:
+    if probe is not None and (
+        parameter is None or probe not in squashed or parameter not in squashed
+    ):
         return False
     return all(marker in squashed for marker in markers)
 
@@ -442,11 +451,13 @@ def _assign_call_ids(payload: list[dict[str, object]]) -> None:
 
     The Mistral family of templates requires every tool call to carry a
     nine-character alphanumeric ``id`` and every tool result a matching
-    ``tool_call_id``. Other templates ignore the keys. The ids are
-    deterministic for a given history.
+    ``tool_call_id``. Other templates ignore the keys. Tool results are
+    matched to their call by ``tool_name`` when the client sends it and by
+    order of appearance otherwise. The ids are deterministic for a given
+    history.
     """
     counter = 0
-    pending: list[str] = []
+    pending: list[tuple[str, str]] = []  # (name, id), oldest first
     for message in payload:
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
@@ -454,9 +465,23 @@ def _assign_call_ids(payload: list[dict[str, object]]) -> None:
                 counter += 1
                 call_id = f"call{counter:05d}"[-9:]
                 call["id"] = call_id
-                pending.append(call_id)
+                function = call.get("function") or {}
+                name = function.get("name") if isinstance(function, dict) else ""
+                pending.append((str(name), call_id))
         if message.get("role") == "tool":
-            message["tool_call_id"] = pending.pop(0) if pending else "call00000"
+            if pending:
+                tool_name = message.get("tool_name")
+                index = -1
+                if isinstance(tool_name, str) and tool_name:
+                    for candidate, (name, _) in enumerate(pending):
+                        if name == tool_name:
+                            index = candidate
+                            break
+                if index == -1:
+                    index = 0
+                message["tool_call_id"] = pending.pop(index)[1]
+            else:
+                message["tool_call_id"] = "call00000"
 
 
 def _message_payload(

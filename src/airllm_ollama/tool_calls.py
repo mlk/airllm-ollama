@@ -27,29 +27,53 @@ from markdown_it import MarkdownIt
 
 from airllm_ollama.schemas.tools import ToolCall, ToolCallFunction
 
+_THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
 _OPEN = "<tool_call>"
 _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
-# Inline HTML that is all example text: comments and raw-text elements. A
-# call inside any of these is an example, never an action. An unterminated
-# element swallows the rest of the text (like an unterminated comment does
-# in HTML), so it is still not executable.
-# Inline HTML tags (not block-level). These are skipped entirely by the
-# code-span scanner: a backtick inside an attribute is not a code fence.
-_INLINE_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(\s[^<>]*?)?/?>")
+# A tag open or close. Tag names cannot contain underscores, so the
+# tool_call and think markers never match; attribute values (quoted with
+# either quote) may contain anything except their own quote.
+_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)(?=[\s/>])((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>")
 
-_THINK_TAG = re.compile(r"<(/?)think\b[^>]*>", re.IGNORECASE)
+# Elements whose content is raw text, up to the matching close tag. An
+# unterminated one swallows the rest of the text, like in HTML.
+_RAW_TEXT_ELEMENTS = frozenset(
+    {
+        "script",
+        "style",
+        "pre",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+        "plaintext",
+        "title",
+        "textarea",
+    }
+)
 
-# Inline HTML that is all example text: comments and raw-text elements
-# *within a paragraph*. Block-level HTML is handled by the CommonMark token
-# stream (an unterminated block swallows the rest of the text there); this
-# pattern only covers inline HTML, which the block parser does not report.
-# An unterminated comment still swallows the rest of the text, like HTML.
-_INLINE_HTML = re.compile(
-    r"<!--.*?(?:-->|$)|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?</\1\s*>",
-    re.IGNORECASE | re.DOTALL,
+# Void elements: they never open a region.
+_VOID_ELEMENTS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
 )
 
 
@@ -63,6 +87,66 @@ def _is_escaped(text: str, position: int) -> bool:
     return slashes % 2 == 1
 
 
+def _comment_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the HTML comments, honouring the blocked regions."""
+    regions: list[tuple[int, int]] = []
+    for match in re.finditer(r"<!--", text):
+        if _is_blocked(blocked, match.start(), match.start() + 4):
+            continue
+        end = text.find("-->", match.end())
+        regions.append((match.start(), len(text) if end == -1 else end + 3))
+    return regions
+
+
+def _html_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the HTML regions of the text.
+
+    Raw-text elements (``<script>`` and the like) and nested elements all
+    swallow everything inside them — a call inside any of them is markup,
+    never an action. An unterminated element swallows the rest of the text,
+    like its HTML counterpart does. A tag name may not contain ``<`` or
+    ``>``; comments need not match any tag grammar.
+    """
+    regions: list[tuple[int, int]] = []
+    stack: list[tuple[str, int]] = []
+    raw_text: tuple[str, int] | None = None
+    for match in _TAG.finditer(text):
+        if _is_blocked(blocked, match.start(), match.end()):
+            continue
+        closing, name, _attrs = match.groups()
+        name = name.lower()
+        if name == "think":
+            # The reasoning block is handled separately by _think_regions;
+            # its delimiters are not HTML tags and never pair here.
+            continue
+        if raw_text is not None:
+            if closing and name == raw_text[0]:
+                regions.append((raw_text[1], match.end()))
+                raw_text = None
+            continue
+        if closing:
+            # Pop everything up to and including the matching open tag; an
+            # unmatched close is ignored.
+            for index in range(len(stack) - 1, -1, -1):
+                if stack[index][0] == name:
+                    start = stack[index][1]
+                    del stack[index:]
+                    regions.append((start, match.end()))
+                    break
+            continue
+        if name in _RAW_TEXT_ELEMENTS:
+            raw_text = (name, match.start())
+            continue
+        if name in _VOID_ELEMENTS:
+            continue
+        stack.append((name, match.start()))
+    if raw_text is not None:
+        regions.append((raw_text[1], len(text)))
+    for _name, start in stack:
+        regions.append((start, len(text)))
+    return regions
+
+
 def _line_starts(text: str) -> list[int]:
     """Return the offset at which each line starts (all line-ending styles)."""
     starts = [0]
@@ -74,6 +158,11 @@ def _line_starts(text: str) -> list[int]:
 
 def _intersects(regions: list[tuple[int, int]], start: int, end: int) -> bool:
     return any(start < region_end and end > region_start for region_start, region_end in regions)
+
+
+def _is_blocked(blocked: list[tuple[int, int]], start: int, end: int) -> bool:
+    """Return whether a span overlaps a blocked region."""
+    return _intersects(blocked, start, end)
 
 
 def _think_regions(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -139,7 +228,41 @@ def _find_backtick_run(text: str, run: int, start: int, end: int) -> int:
         position = found + run
 
 
-def _inline_code_regions(
+def _segments(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the block-level segments of the document."""
+    try:
+        tokens = _MARKDOWN.parse(text)
+    except Exception:
+        return [(0, len(text))]
+    line_starts = _line_starts(text)
+    segments: list[tuple[int, int]] = []
+    for token in tokens:
+        if token.map is None:
+            continue
+        if token.type == "inline":
+            segments.append((line_starts[token.map[0]], line_starts[token.map[1]]))
+    if not segments:
+        segments.append((0, len(text)))
+    return segments
+
+
+def _markdown_blocks(text: str) -> list[tuple[int, int]]:
+    """Return the fence/code regions the Markdown parser reports."""
+    try:
+        tokens = _MARKDOWN.parse(text)
+    except Exception:
+        return [(0, len(text))]
+    line_starts = _line_starts(text)
+    regions: list[tuple[int, int]] = []
+    for token in tokens:
+        if token.map is None:
+            continue
+        if token.type in ("fence", "code_block", "html_block"):
+            regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
+    return regions
+
+
+def _inline_spans(
     text: str,
     blocked: list[tuple[int, int]],
     segments: list[tuple[int, int]],
@@ -149,7 +272,7 @@ def _inline_code_regions(
     CommonMark: a span opens with a run of backticks and closes at a run of
     exactly the same length, anywhere inside one block (a span may span
     line breaks, but never a block boundary). Spans do not open inside a
-    block region.
+    blocked region.
     """
     regions: list[tuple[int, int]] = []
     blocked_index = 0
@@ -163,7 +286,6 @@ def _inline_code_regions(
                 continue
             char = text[position]
             if char == "\\":
-                # An escaped character is never the start of a code span.
                 position += 2
                 continue
             if char == "`":
@@ -179,79 +301,8 @@ def _inline_code_regions(
     return regions
 
 
-def _parse_blocks(
-    text: str, include_html: bool
-) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Return the block code spans and the inline-block spans of the text.
-
-    Inline code spans may not cross a block boundary, so the caller also
-    needs the boundaries of every block. HTML blocks are only honoured on
-    the second pass — the first pass must see ``<think>`` tags even when an
-    HTML block would swallow them.
-    """
-    try:
-        tokens = _MARKDOWN.parse(text)
-    except Exception:
-        # An unparseable document: treat it as opaque, nothing is a call.
-        return [(0, len(text))], [(0, len(text))]
-    line_starts = _line_starts(text)
-    blocks: list[tuple[int, int]] = []
-    segments: list[tuple[int, int]] = []
-    for token in tokens:
-        if token.map is None:
-            continue
-        span = (line_starts[token.map[0]], line_starts[token.map[1]])
-        if token.type in ("fence", "code_block") or (include_html and token.type == "html_block"):
-            blocks.append(span)
-        elif token.type == "inline":
-            # Code spans may not cross a block boundary; inline tokens are
-            # the smallest blocks that carry inline markup.
-            segments.append(span)
-    return blocks, segments
-
-
-def _mask(text: str, regions: list[tuple[int, int]]) -> str:
-    """Replace the regions with spaces, keeping the newlines."""
-    chars = list(text)
-    for start, end in regions:
-        for index in range(start, end):
-            if chars[index] != "\n":
-                chars[index] = " "
-    return "".join(chars)
-
-
-def _code_regions(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the code regions of the text.
-
-    Fenced and indented code blocks, inline code spans and reasoning blocks
-    are not calls — an example the model writes for the user is never
-    executed. Markdown decides what counts as a code region: blockquotes,
-    headings, list items and nested fences all follow the same rules as a
-    rendered document. Reasoning blocks are masked before the rest of the
-    analysis so that markup inside them is never parsed as Markdown.
-    """
-    pre_blocks, pre_segments = _parse_blocks(text, include_html=False)
-    pre_inline = _inline_code_regions(text, _merge_regions(pre_blocks), pre_segments)
-    pre_blocked = _merge_regions(pre_blocks + pre_inline)
-    valid = _valid_call_spans(text, pre_blocked)
-    think = _think_regions(text, _merge_regions(pre_blocked + valid))
-    masked = _mask(text, think)
-    blocks, segments = _parse_blocks(masked, include_html=True)
-    blocks.extend(match.span() for match in _INLINE_HTML.finditer(masked))
-    # Inline HTML tags are opaque to the code-span scanner (a backtick
-    # inside a tag attribute is not a code span delimiter). The tool-call
-    # marker itself is not a valid HTML tag name, so it is never masked.
-    blocks.extend(match.span() for match in _INLINE_TAG.finditer(masked))
-    inline = _inline_code_regions(masked, _merge_regions(blocks), segments)
-    return _merge_regions(_merge_regions(blocks + inline) + think)
-
-
-def _valid_call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Return the spans of the well-formed tool calls outside the blocked regions.
-
-    Reasoning delimiters inside a call's JSON are data, not reasoning — this
-    keeps them from pairing ``</think>`` with an unrelated opening tag.
-    """
+def _call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return the spans of the well-formed calls outside the blocked regions."""
     spans: list[tuple[int, int]] = []
     decoder = _strict_decoder()
     blocked_index = 0
@@ -273,6 +324,29 @@ def _valid_call_spans(text: str, blocked: list[tuple[int, int]]) -> list[tuple[i
             continue
         position += 1
     return spans
+
+
+def _code_regions(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the regions of the text that are not calls.
+
+    Fenced and indented code blocks, inline code spans, HTML blocks, and
+    reasoning blocks (``<think>...</think>``) are not calls — an example the
+    model writes for the user is never executed. Reasoning blocks are
+    computed last and mask their whole content, so nothing inside them is
+    ever parsed as markup.
+    """
+    fences = _markdown_blocks(text)
+    comments = _comment_regions(text, fences)
+    # Well-formed calls are opaque to the region scan: their contents may
+    # contain anything, including markup-looking text.
+    calls = _call_spans(text, _merge_regions(fences + comments))
+    html = _html_regions(text, _merge_regions(fences + comments + calls))
+    blocks = _merge_regions(fences + comments + html)
+    segments = _segments(text)
+    inline = _inline_spans(text, blocks, segments)
+    calls = _call_spans(text, _merge_regions(blocks + inline))
+    think = _think_regions(text, _merge_regions(blocks + inline + calls))
+    return _merge_regions(blocks + inline + think)
 
 
 def extract_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
@@ -354,7 +428,7 @@ def _skip_block(text: str, start: int) -> int:
             depth += 1
             position += len(_OPEN)
             continue
-        if text.startswith(_CLOSE, position):
+        if text.startswith(_CLOSE, position) and not _is_escaped(text, position):
             depth -= 1
             position += len(_CLOSE)
             if depth == 0:

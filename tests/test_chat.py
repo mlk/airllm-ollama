@@ -433,13 +433,14 @@ class FakeToolTokenizer:
         kwargs_tools = kwargs.get("tools") or []
         echoed = [
             str(message.get("content", ""))
-            + "".join(str(call["function"]["arguments"]) for call in message.get("tool_calls", []))
+            + "".join(
+                str(call["function"]["name"]) + str(call["function"]["arguments"])
+                for call in message.get("tool_calls", [])
+            )
             for message in messages
             if isinstance(message, dict)
         ]
-        echoed.append(
-            "".join(str(tool.get("function", {}).get("name", "")) for tool in kwargs_tools)
-        )
+        echoed.append(json.dumps(kwargs_tools, default=str))
         return "<​|im_start|>assistant\n" + "\n".join(echoed)
 
 
@@ -487,6 +488,20 @@ def test_a_template_that_reads_tool_calls_gets_the_structured_payload() -> None:
             super().__init__()
             self.chat_template = "{{ message.tool_calls }}"
 
+        def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
+            """Render the calls like a template that reads them does."""
+            self.renderings.append(list(messages))
+            return "\n".join(
+                str(message.get("content", ""))
+                + "".join(
+                    str(call["function"]["name"]) + str(call["function"]["arguments"])
+                    for call in message.get("tool_calls", [])
+                )
+                + str(message.get("tool_name", ""))
+                for message in messages
+                if isinstance(message, dict)
+            )
+
     tokenizer = ToolAwareTokenizer()
 
     render_chat(tokenizer, TOOL_MESSAGES)
@@ -523,12 +538,12 @@ class DictTemplateTokenizer:
         """Render the messages, like a named-template tokenizer would."""
         self.renderings.append(list(messages))
         branch = "tool_use" if kwargs.get("tools") else "default"
-        echoed = "|".join(
-            str(tool.get("function", {}).get("name", ""))
-            for tool in kwargs.get("tools", [])
-            if isinstance(tool, dict)
+        return (
+            f"{branch}:"
+            + json.dumps(kwargs.get("tools") or [], default=str)
+            + "|"
+            + json.dumps(messages, default=str)
         )
-        return f"{branch}:{echoed}|" + json.dumps(messages, default=str)
 
 
 def test_a_dict_template_without_tools_selects_the_default_branch() -> None:
@@ -571,12 +586,15 @@ class R1StyleTokenizer:
     def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
         """Render the messages the way the R1 template does."""
         parts = []
+        if kwargs.get("tools"):
+            parts.append(json.dumps(kwargs["tools"], default=str))
         for message in messages:
             if message["role"] == "assistant":
                 if message["content"] is None:
                     for call in message.get("tool_calls", []):
                         name = call["function"]["name"]
-                        parts.append(f"<tool_call>{name}</tool_call>")
+                        arguments = json.dumps(call["function"]["arguments"])
+                        parts.append(f"<tool_call>{name}{arguments}</tool_call>")
                 else:
                     parts.append(str(message["content"]))
             else:
@@ -591,7 +609,7 @@ def test_a_template_that_requires_null_content_renders_the_tool_calls() -> None:
 
     render_chat(tokenizer, TOOL_MESSAGES)
 
-    assert "<tool_call>get_weather</tool_call>" in tokenizer.rendered
+    assert "<tool_call>get_weather" in tokenizer.rendered
 
 
 def test_an_assistant_message_with_text_and_tool_calls_keeps_its_content() -> None:

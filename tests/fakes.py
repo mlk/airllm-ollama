@@ -6,6 +6,7 @@ with a ``generate`` method.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any, cast
@@ -137,14 +138,15 @@ class EchoTokenizer(FakeTokenizer):
         echoed = [
             str(message.get("content", ""))
             + "".join(
-                str(call.get("function", {}).get("arguments", ""))
+                str(call.get("function", {}).get("name", ""))
+                + str(call.get("function", {}).get("arguments", ""))
                 for call in message.get("tool_calls", [])
                 if isinstance(call, dict)
             )
             + str(message.get("tool_name", ""))
             for message in message_list
         ]
-        echoed.extend(str(tool.get("function", {}).get("name", "")) for tool in tool_list)
+        echoed.append(json.dumps(tool_list, default=str))
         self.template_kwargs.append(dict(kwargs))
         return "<​|im_start|>assistant\n" + "\n".join(echoed)
 
