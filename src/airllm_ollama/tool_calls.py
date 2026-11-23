@@ -32,9 +32,10 @@ _CLOSE = "</tool_call>"
 _WHITESPACE = " \t\r\n"
 _MARKDOWN = MarkdownIt("commonmark")
 
-# Inline HTML that is all example text — comments and raw-text elements.
+# Inline HTML that is all example text: comments and raw-text elements. A
+# call inside any of these is an example, never an action.
 _HTML_SPAN = re.compile(
-    r"<!--.*?-->|<(script|style|pre|code|kbd|samp|xmp)\b[^>]*>.*?</\1\s*>",
+    r"<!--.*?-->|<(script|style|pre|code|kbd|samp|xmp|div|section|article|table|ul|ol|li|p|blockquote|form|details|summary|svg|math)\b[^>]*>.*?</\1\s*>",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -60,7 +61,7 @@ def _markdown_regions(text: str) -> list[tuple[int, int]]:
     line_starts = _line_starts(text)
     regions: list[tuple[int, int]] = []
     for token in tokens:
-        if token.map is not None and token.type in ("fence", "code_block", "html_block"):
+        if token.map is not None and token.type in ("fence", "code_block"):
             regions.append((line_starts[token.map[0]], line_starts[token.map[1]]))
     regions.extend(match.span() for match in _HTML_SPAN.finditer(text))
     return regions
